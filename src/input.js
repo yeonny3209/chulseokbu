@@ -11,6 +11,10 @@ export class Input {
     this.right = false;
     this.leftClicked = false;
     this.locked = false;
+    // touch devices: an analog stick (set by touch.js) and no pointer lock
+    this.touch = false;
+    this.axisX = 0;
+    this.axisY = 0;
 
     window.addEventListener('keydown', (e) => {
       if (['Tab', 'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'F1'].includes(e.code)) e.preventDefault();
@@ -43,6 +47,7 @@ export class Input {
   hit(code) { return this.pressed.has(code); }
 
   lock() {
+    if (this.touch) { this.locked = true; this.game.enterFullscreen(); return; }
     try {
       const p = this.el.requestPointerLock();
       if (p && p.catch) p.catch(() => {});
@@ -50,6 +55,7 @@ export class Input {
   }
 
   unlock() {
+    if (this.touch) { this.locked = false; return; }
     if (document.pointerLockElement) document.exitPointerLock();
   }
 

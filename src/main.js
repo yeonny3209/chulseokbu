@@ -16,6 +16,7 @@ import { Player } from './player.js';
 import { Teacher } from './teacher.js';
 import { Events } from './events.js';
 import { Ending } from './ending.js';
+import { TouchControls, isTouchDevice } from './touch.js';
 import { Net, MAX_PLAYERS } from './net/net.js';
 import { PLAYER_COLORS } from './net/remote.js';
 import { FLOOR_NAMES, START, fy } from './layout.js';
@@ -76,7 +77,10 @@ const RPC = {
 
 class Game {
   constructor() {
+    const firstRun = (() => { try { return !localStorage.getItem('chulseokbu.settings.v1'); } catch (e) { return true; } })();
     loadSettings();
+    this.isTouch = isTouchDevice();
+    if (this.isTouch && firstRun) settings.quality = 'low'; // phones: lighter graphics by default
     this.mode = 'menu';
     this.shake = 0;
     this.fps = 60;
@@ -94,6 +98,10 @@ class Game {
     this.ui = new UI(this);
     this.audio = new AudioSys();
     this.input = new Input(this.renderer.domElement, this);
+    if (this.isTouch) {
+      document.body.classList.add('touch');
+      this.touch = new TouchControls(this);
+    }
     this.buildWorld();
     this.player = new Player(this);
     this.teacher = new Teacher(this);
@@ -220,12 +228,9 @@ class Game {
   wireUI() {
     const ui = this.ui;
     const $ = ui.$;
-    const mobile = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
-    if (mobile) {
-      ui.show('mobile-warn', true);
-      $('btn-new').disabled = true;
-      $('btn-continue').disabled = true;
-      $('btn-mp').disabled = true;
+    if (this.isTouch) {
+      ui.show('touch-help', true);
+      ui.show('pc-help', false);
     }
     $('btn-new').onclick = () => this.startNew();
     $('btn-continue').onclick = () => this.continueGame();
@@ -254,8 +259,21 @@ class Game {
   }
 
   refreshMenu() {
-    const has = hasSave();
-    this.ui.$('btn-continue').disabled = !has || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
+    this.ui.$('btn-continue').disabled = !hasSave();
+  }
+
+  /** Phones: go fullscreen and landscape when the game starts (needs a tap, which starting is). */
+  enterFullscreen() {
+    if (!this.isTouch || this._fsTried) return;
+    this._fsTried = true; // ask once; if the player leaves fullscreen we respect that
+    try {
+      const el = document.documentElement;
+      const req = el.requestFullscreen || el.webkitRequestFullscreen;
+      if (req && !document.fullscreenElement) {
+        const p = req.call(el);
+        if (p && p.then) p.then(() => screen.orientation && screen.orientation.lock && screen.orientation.lock('landscape').catch(() => {})).catch(() => {});
+      }
+    } catch (e) { /* not supported (e.g. iPhone Safari): playing in the normal view is fine */ }
   }
 
   openSettings(from) {

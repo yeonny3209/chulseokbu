@@ -118,23 +118,38 @@ export class UI {
 
   showHud(on) {
     this.show('hud', on);
+    if (this.game.touch) this.game.touch.setVisible(on);
   }
 
   // -------------------------------------------------------------- HUD
   setPrompt(text) {
     if (text === this._prompt) return;
     this._prompt = text;
-    this.el.prompt.textContent = text || '';
+    this.el.prompt.textContent = this.tr(text) || '';
     this.el.prompt.classList.toggle('on', !!text);
   }
 
+  /** On phones, mention on-screen buttons instead of keys. */
+  tr(t) {
+    if (!t || !this.game.isTouch) return t;
+    return t
+      .replace('좌클릭/F: 켜기/끄기, 우클릭/R: 집중광', '손전등 버튼: 켜기/끄기, 집중광 버튼')
+      .replace('Q: 던지기', '던지기 버튼')
+      .replace('[Q 던지기]', '[던지기 버튼]')
+      .replace('WASD 이동 · E 조사하기', '왼쪽 화면 드래그: 이동 · 조사 버튼')
+      .replace('(Shift 달리기는 소리가 크다)', '(달리기는 소리가 크다)')
+      .replace('[ E ]', '(조사 버튼)')
+      .replace('[E]', '(조사)')
+      .replace('E 길게 누르기', '조사 버튼 길게');
+  }
+
   toast(text, ms = 3400) {
-    this.el.toast.textContent = text;
+    this.el.toast.textContent = this.tr(text);
     this._timed('toast', this.el.toast, ms);
   }
 
   hint(text, ms = 6000) {
-    this.el.hint.textContent = text;
+    this.el.hint.textContent = this.tr(text);
     this._timed('hint', this.el.hint, ms);
   }
 
@@ -180,7 +195,7 @@ export class UI {
   }
 
   setHeld(type) {
-    this.el.held.textContent = type ? `손에 든 것: ${HELD_LABELS[type]}  [Q 던지기]` : '';
+    this.el.held.textContent = type ? this.tr(`손에 든 것: ${HELD_LABELS[type]}  [Q 던지기]`) : '';
   }
 
   breath(on) {

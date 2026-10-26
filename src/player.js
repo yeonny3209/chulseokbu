@@ -175,6 +175,8 @@ export class Player {
     if (inp.down('KeyS')) mz += 1;
     if (inp.down('KeyA')) mx -= 1;
     if (inp.down('KeyD')) mx += 1;
+    // touch stick adds an analog push (dead zone so a resting thumb does not creep)
+    if (Math.hypot(inp.axisX, inp.axisY) > 0.12) { mx += inp.axisX; mz += inp.axisY; }
     const moving = mx !== 0 || mz !== 0;
     this.moving = moving;
     const wantRun = inp.down('ShiftLeft') || inp.down('ShiftRight');
@@ -183,7 +185,8 @@ export class Player {
     let speed = this.crouch ? P.crouch : this.running ? P.run : P.walk;
     if (moving) {
       const len = Math.hypot(mx, mz);
-      mx /= len; mz /= len;
+      if (len > 1) { mx /= len; mz /= len; }
+      speed *= Math.max(0.35, Math.min(1, len));
       const sin = Math.sin(this.yaw), cos = Math.cos(this.yaw);
       // camera forward = (-sin, -cos); right = (cos, -sin)
       const dx = (mx * cos + mz * sin) * speed * dt;
