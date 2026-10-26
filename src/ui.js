@@ -3,6 +3,7 @@ import { CFG } from './config.js';
 import { NOTES, NOTE_COUNT, OBJECTIVES, HINTS } from './story.js';
 import { S, settings, saveSettings } from './state.js';
 import { fmtTime } from './util.js';
+import { faceTexture } from './textures.js';
 
 const ITEM_LABELS = {
   flashlight: '손전등',
@@ -211,8 +212,33 @@ export class UI {
     this.el.fade.style.opacity = String(opacity);
   }
 
-  flash(ms = 120) {
+  /** The face fills the whole screen: a fast zoom-in, then violent shaking, then cut. */
+  faceSlam(ms = 650, calm = false) {
+    const el = this.$('scare-face');
+    const img = this.$('scare-img');
+    if (!this._faceSrc) {
+      this._faceSrc = faceTexture('ghoul').image.toDataURL();
+      img.src = this._faceSrc;
+    }
+    el.classList.remove('hidden');
+    const t0 = performance.now();
+    const amp = calm ? 0 : 1;
+    const tick = () => {
+      const t = performance.now() - t0;
+      if (t > ms) { el.classList.add('hidden'); return; }
+      const k = Math.min(1, t / 80);
+      const s = 0.35 + 1.25 * (1 - (1 - k) * (1 - k));
+      const jx = (Math.random() - 0.5) * 34 * amp, jy = (Math.random() - 0.5) * 34 * amp;
+      img.style.transform = `translate(${jx}px, ${jy}px) scale(${s}) rotate(${(Math.random() - 0.5) * 7 * amp}deg)`;
+      el.style.opacity = t > ms - 140 ? String((ms - t) / 140) : '1';
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
+  flash(ms = 120, color = '#fff') {
     const f = this.el.flash;
+    f.style.background = color;
     f.style.transition = 'none';
     f.style.opacity = '0.9';
     requestAnimationFrame(() => {

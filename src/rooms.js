@@ -185,6 +185,7 @@ export function furnish(world) {
         S.flags.mirrorSeen = true;
         g.ui.toast('거울을 들여다본다. 아무것도 비치지 않는다.');
         g.audio.play('chalk', { gain: 0.25 });
+        g.events.mirrorLook();
       },
     });
     if (c.room.sign === '여자화장실') {
@@ -437,7 +438,7 @@ export function furnish(world) {
   world.addInteract({
     id: 'mirror_stair', f: 0, x: -7.2, y: 1.75 + 1.6, z: 1.5, range: 1.7,
     prompt: () => '거울 [E]',
-    use: () => { S.flags.mirrorSeen = true; g.ui.toast('계단참의 거울. 아무것도 비치지 않는다.'); },
+    use: () => { S.flags.mirrorSeen = true; g.ui.toast('계단참의 거울. 아무것도 비치지 않는다.'); g.events.mirrorLook(); },
   });
 
   // ---------------------------------------------------------------- items

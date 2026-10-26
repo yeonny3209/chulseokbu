@@ -104,6 +104,16 @@ export class Player {
     this.reviving = 0; // id of the downed friend this player is helping up
     this.rp = 0; // revive progress while this player is down (0..1)
     this.hideTime = 0;
+    // scares
+    this.flashLock = 0; // seconds the flashlight is forced dark
+    this.look = null; // {yaw, pitch, t, dur}: forced head turn
+  }
+
+  /** Snap the view toward a world position (e.g. something just appeared behind us). */
+  forceLookAt(x, y, z, dur = 0.5) {
+    const e = this.eye();
+    const dx = x - e.x, dy = y - e.y, dz = z - e.z;
+    this.look = { yaw: Math.atan2(-dx, -dz), pitch: Math.atan2(dy, Math.hypot(dx, dz)) * 0.8, t: 0, dur };
   }
 
   get id() { return this.game.net.myId; }
@@ -134,7 +144,15 @@ export class Player {
 
     // ---- look
     const sens = 0.0022 * settings.sensitivity;
-    if (!this.frozen) {
+    if (this.flashLock > 0) this.flashLock -= dt;
+    if (this.look) {
+      // something makes us snap our head toward it (scares): input is ignored for a moment
+      const L = this.look;
+      L.t += dt;
+      this.yaw += angleDiff(this.yaw, L.yaw) * Math.min(1, dt * 20);
+      this.pitch += (L.pitch - this.pitch) * Math.min(1, dt * 20);
+      if (L.t > L.dur) this.look = null;
+    } else if (!this.frozen) {
       this.yaw -= inp.dx * sens;
       this.pitch -= inp.dy * sens * (settings.invertY ? -1 : 1);
       const k = 1.9 * dt;
@@ -315,8 +333,11 @@ export class Player {
       g.ui.breath(false);
     }
     this.camY = CFG.player.eye;
+    this.faceShown = false;
     g.audio.setChase(0);
     g.audio.play('stingerSoft', { gain: 0.9 });
+    g.audio.play('scream', { bus: 'sting', gain: 0.7 });
+    g.scareFx(1);
     g.ui.setPrompt(null);
   }
 
@@ -330,6 +351,7 @@ export class Player {
     this.yaw += angleDiff(this.yaw, wantYaw) * Math.min(1, dt * 9);
     this.pitch += (wantPitch - this.pitch) * Math.min(1, dt * 9);
     this.grabT += dt;
+    if (this.grabT > 0.3 && !this.faceShown) { this.faceShown = true; g.ui.faceSlam(700, settings.reduceShake); }
     if (!g.mp && this.grabT > 0.9 && !this.grabFaded) { this.grabFaded = true; g.ui.fade(1, 250); }
     if (this.grabT > 1.3 && !this.grabTextShown) {
       this.grabTextShown = true;
@@ -376,6 +398,10 @@ export class Player {
   /** Back on our feet at a respawn point (team revive or checkpoint restart). */
   respawn(x, y, z, yaw) {
     const g = this.game;
+    if (g.scares) g.scares.cancel();
+    g.fovKick = 0;
+    this.flashLock = 0;
+    this.look = null;
     this.teleport(x, y, z, yaw);
     this.downed = false;
     this.grabbed = false;
@@ -534,7 +560,7 @@ export class Player {
       k = n > 0.55 ? 0.12 : 0.85 + 0.15 * Math.sin(this.flickerT * 90);
       if (S.battery < 6) k *= 0.7;
     }
-    spot.visible = this.flashOn;
+    spot.visible = this.flashOn && this.flashLock <= 0;
     spot.intensity = (this.focus ? FL.focusIntensity : FL.intensity) * k * settings.brightness;
     spot.angle = damp(spot.angle, this.focus ? FL.focusAngle : FL.angle, 14, dt);
     g.ui.setBattery(S.battery, !!S.keys.flashlight);
@@ -556,7 +582,14 @@ export class Player {
     cam.position.set(this.pos.x + bobX, this.pos.y + this.camY + bobY, this.pos.z);
     cam.rotation.set(this.pitch + (Math.random() - 0.5) * shake * 0.03, this.yaw + (Math.random() - 0.5) * shake * 0.03, 0, 'YXZ');
     const targetFov = settings.fov + (this.running ? 4 : 0);
-    if (Math.abs(cam.fov - targetFov) > 0.05) { cam.fov = damp(cam.fov, targetFov, 6, dt); cam.updateProjectionMatrix(); }
+    if (g.fovKick > 0.05) {
+      // a scare "zooms" the view in a snap: the field of view jumps wider, then settles back
+      cam.fov = settings.fov + g.fovKick;
+      cam.updateProjectionMatrix();
+    } else if (Math.abs(cam.fov - targetFov) > 0.05) {
+      cam.fov = damp(cam.fov, targetFov, 6, dt);
+      cam.updateProjectionMatrix();
+    }
 
     // flashlight follows the camera with a little lag
     const fwd = this.forward();

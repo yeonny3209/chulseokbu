@@ -32,12 +32,19 @@ export class AudioSys {
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -14;
     comp.ratio.value = 6;
-    this.master.connect(comp);
+    // a low-pass on the whole mix: after a scare everything sounds muffled for a moment ("deafened")
+    this.lp = ctx.createBiquadFilter();
+    this.lp.type = 'lowpass';
+    this.lp.frequency.value = 22000;
+    this.master.connect(this.lp);
+    this.lp.connect(comp);
     comp.connect(ctx.destination);
     this.sfx = ctx.createGain();
     this.music = ctx.createGain();
+    this.sting = ctx.createGain(); // scare sounds: not affected by duck()
     this.sfx.connect(this.master);
     this.music.connect(this.master);
+    this.sting.connect(this.master);
     this.applyVolumes();
     this.build();
     this.startAmbience();
@@ -108,6 +115,48 @@ export class AudioSys {
     B.phone = mk(0.7, (t) => Math.sin(t * 2 * Math.PI * (t < 0.3 ? 1100 : 880)) * (((t * 7) % 1) < 0.6 ? 1 : 0) * Math.exp(-t * 2) * 0.3);
     B.murmur = mk(1.2, (t) => { const f = 105 + Math.sin(t * 5.5) * 7; return (Math.sin(t * 2 * Math.PI * f) + 0.5 * Math.sin(t * 2 * Math.PI * f * 3.1) + 0.3 * Math.sin(t * 2 * Math.PI * f * 5.2)) * Math.sin((t / 1.2) * Math.PI) * 0.4; });
     B.loopNoise = mk(4, () => R());
+
+    // ---- scare sounds ----
+    { // a distorted human-ish scream (rising screech, harmonics, noise, hard clipping)
+      let ph = 0;
+      B.scream = mk(1.7, (t) => {
+        const f = 620 + 950 * Math.min(1, t / 0.45) + Math.sin(t * 38) * 80;
+        ph += (2 * Math.PI * f) / sr;
+        let s = Math.sin(ph) + 0.6 * Math.sin(2.01 * ph) + 0.4 * Math.sin(3.1 * ph) + R() * 0.55;
+        s = Math.tanh(s * 3.4) * 0.6;
+        return s * Math.min(1, t / 0.006) * Math.exp(-Math.max(0, t - 0.4) * 1.6);
+      });
+    }
+    { const l = lpf(0.03); B.sub = mk(2.2, (t) => (Math.sin(t * 2 * Math.PI * (48 - t * 14)) * 1.3 + l(R()) * 1.1) * Math.exp(-t * 1.9) * Math.min(1, t / 0.004)); }
+    B.ring = mk(4.0, (t) => (Math.sin(t * 2 * Math.PI * 4300) + 0.5 * Math.sin(t * 2 * Math.PI * 6100)) * 0.2 * Math.min(1, t / 0.4) * Math.exp(-Math.max(0, t - 1.2) * 0.8));
+    { const bp = lpf(0.22); const hp = lpf(0.02); B.breathClose = mk(1.5, (t) => { const x = R(); return (bp(x) - hp(x)) * Math.sin((t / 1.5) * Math.PI) ** 2 * 2.6; }); }
+    { const l = lpf(0.2); B.pound = mk(0.5, (t) => (Math.sin(t * 2 * Math.PI * 68) * 1.1 + l(R()) * 0.9) * Math.exp(-t * 11)); }
+    B.glass = mk(1.2, (t) => { let s = 0; for (let k = 0; k < 9; k++) s += Math.sin(t * 2 * Math.PI * (2200 + k * 777)) * Math.exp(-(t - k * 0.012) * 9) * (t > k * 0.012 ? 1 : 0); return s * 0.18 + R() * Math.exp(-t * 22) * 0.9; });
+  }
+
+  /** Silence everything except scare sounds for `sec` seconds (the quiet before the scare). */
+  duck(sec, depth = 0.02) {
+    if (!this.ready) return;
+    const t = this.ctx.currentTime;
+    const back = [[this.sfx, settings.volSfx], [this.music, settings.volMusic]];
+    for (const [b, vol] of back) {
+      b.gain.cancelScheduledValues(t);
+      b.gain.setTargetAtTime(depth, t, 0.04);
+      b.gain.setTargetAtTime(vol, t + sec, 0.25);
+    }
+  }
+
+  /** Muffle the whole mix and let it clear up again (hearing "dulled" after a shock). */
+  muffle(sec = 2.5) {
+    if (!this.ready) return;
+    const t = this.ctx.currentTime;
+    this.lp.frequency.cancelScheduledValues(t);
+    this.lp.frequency.setValueAtTime(380, t);
+    this.lp.frequency.exponentialRampToValueAtTime(22000, t + sec);
+  }
+
+  ringing(gain = 0.45) {
+    this.play('ring', { bus: 'sting', gain, jitter: 0 });
   }
 
   startAmbience() {
@@ -208,7 +257,7 @@ export class AudioSys {
       node.connect(p);
       node = p;
     }
-    node.connect(o.bus === 'music' ? this.music : this.sfx);
+    node.connect(o.bus === 'music' ? this.music : o.bus === 'sting' ? this.sting : this.sfx);
     src.start();
     return { src, gain: g };
   }

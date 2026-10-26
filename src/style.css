@@ -51,6 +51,9 @@ html, body { margin: 0; height: 100%; background: #000; color: var(--fg); overfl
 #phone .screen { display: flex; flex-direction: column; align-items: center; gap: 6px; color: #bcd; }
 #phone b { font-size: 22px; } #phone span { font-size: 42px; } #phone em { font-size: 12px; color: #e77; font-style: normal; }
 @keyframes phoneflick { 50% { opacity: 0.6; } }
+#scare-face { position: fixed; inset: 0; z-index: 55; pointer-events: none; display: flex; align-items: center; justify-content: center; overflow: hidden; background: radial-gradient(ellipse at center, rgba(20, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0.97) 75%); }
+#scare-face.hidden { display: none; }
+#scare-img { width: min(86vh, 96vw); height: min(86vh, 96vw); image-rendering: auto; filter: contrast(1.6) brightness(1.2) saturate(0.35); will-change: transform; }
 #fade { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none; transition: opacity 0.6s; }
 #flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
 

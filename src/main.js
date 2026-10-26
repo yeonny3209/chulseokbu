@@ -16,6 +16,7 @@ import { Player } from './player.js';
 import { Teacher } from './teacher.js';
 import { Events } from './events.js';
 import { Ending } from './ending.js';
+import { Scares } from './scares.js';
 import { TouchControls, isTouchDevice } from './touch.js';
 import { Net, MAX_PLAYERS } from './net/net.js';
 import { PLAYER_COLORS } from './net/remote.js';
@@ -73,6 +74,8 @@ const RPC = {
   respawn: (g, x, y, z, yaw) => g.player.respawn(x, y, z, yaw),
   wipeFade: (g) => { g.ui.fade(1, 1200); g.ui.toast('모두 쓰러졌다…', 2500); },
   ending: (g) => g.startEnding(),
+  scare: (g, kind, p) => g.scares.run(kind, p || {}),
+  fx: (g, power) => g.scareFx(power),
 };
 
 class Game {
@@ -90,6 +93,9 @@ class Game {
     this.difficultyBuilt = null;
     this.wiping = false;
     this.hudT = 0;
+    this.fovKick = 0; // degrees added to the field of view for a split second (scares)
+    this.caSpike = 0; // colour-fringing spike
+    this.fearBoost = 0; // seconds of forced maximum fear (heartbeat, vignette)
     this.remoteSpots = [];
     this.remoteSpotUsed = [];
 
@@ -107,6 +113,7 @@ class Game {
     this.teacher = new Teacher(this);
     this.events = new Events(this);
     this.ending = new Ending(this);
+    this.scares = new Scares(this);
     this.applySettings();
     this.wireUI();
     this.player.teleport(START.x, fy(START.f), START.z, START.yaw);
@@ -430,6 +437,10 @@ class Game {
   /** Put the player at the saved checkpoint and rebuild world/teacher state from S. */
   applyCheckpoint(fromDeath) {
     const cp = S.cp || { x: START.x, y: fy(START.f), z: START.z, yaw: START.yaw };
+    this.scares.cancel();
+    this.player.flashLock = 0;
+    this.player.look = null;
+    this.fovKick = 0;
     this.player.teleport(cp.x, cp.y, cp.z, cp.yaw);
     this.player.flashOn = false;
     this.player.frozen = false;
@@ -560,10 +571,20 @@ class Game {
   }
 
   chaseAlert() {
-    this.audio.play('spot', { gain: 0.9 });
+    this.audio.play('spot', { bus: 'sting', gain: 1.0 });
+    this.audio.play('scream', { bus: 'sting', gain: 0.4 });
     this.audio.say('17번!', { vol: 1, pitch: 0.2, rate: 0.9, interrupt: true });
     this.ui.subtitle('"17번!"', 1800);
-    this.shake = Math.max(this.shake, 0.6);
+    this.scareFx(0.55);
+  }
+
+  /** Physical shock: screen shake, field-of-view kick, colour fringing, racing heart. */
+  scareFx(power = 1) {
+    const calm = settings.reduceShake ? 0.35 : 1;
+    this.shake = Math.max(this.shake, 1.7 * power * calm);
+    this.fovKick = Math.max(this.fovKick, 22 * power * calm);
+    this.caSpike = Math.max(this.caSpike, power * calm);
+    this.fearBoost = Math.max(this.fearBoost, 3 * power);
   }
 
   onPlayerHide(p, h) {
@@ -788,8 +809,12 @@ class Game {
     if (this.mode === 'ending') this.ending.update(dt);
 
     // ambience reacting to the teacher
-    const fear = this.mode === 'ending' ? 0 : this.teacher.fear();
-    this.fear = damp(this.fear || 0, fear, 3, dt);
+    this.scares.update(dt);
+    this.fovKick *= Math.exp(-dt * 8);
+    this.caSpike *= Math.exp(-dt * 5);
+    if (this.fearBoost > 0) this.fearBoost -= dt;
+    const fear = this.mode === 'ending' ? 0 : Math.max(this.teacher.fear(), this.fearBoost > 0 ? 1 : 0);
+    this.fear = damp(this.fear || 0, fear, this.fearBoost > 0 ? 12 : 3, dt);
     const fwd = p.forward();
     this.audio.setListener(p.pos.x, p.pos.y + p.camY, p.pos.z, fwd.x, fwd.z);
     if (this.mode !== 'ending') this.audio.heart(dt, this.fear);
@@ -839,6 +864,7 @@ class Game {
     const f = this.film.uniforms;
     f.time.value = (f.time.value + dt) % 100;
     f.fear.value = this.fear || 0;
+    f.ca.value = 0.0012 + (this.caSpike || 0) * 0.022;
     f.grain.value = 0.045 + (this.fear || 0) * 0.05;
     f.vignette.value = this.player.hidden ? 1.4 : 1;
     if (this.quality.post) this.composer.render(dt);

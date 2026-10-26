@@ -17,7 +17,8 @@
 | `nav.js` | 선생님 길찾기용 웨이포인트 그래프 + A* (계단 포함) |
 | `teacher.js` | 선생님 모델 + AI 상태기계 (순찰/의심/수색/추격/기절/잡기/연출) |
 | `player.js` | 이동, 손전등, 숨기, 던지기, 상호작용 |
-| `events.js` | 줍기, 퍼즐, 점프스케어, 체크포인트, 마지막 추격, 트리거 |
+| `events.js` | 줍기, 퍼즐, 점프스케어 배치, 체크포인트, 마지막 추격, 트리거 |
+| `scares.js` | 점프스케어 연출 3종: `advance`(불이 깜빡일 때마다 가까워짐→폭발), `behind`(등 뒤 숨소리→강제로 뒤돌아봄), `slam`(즉시 폭발). 소리 끊김·비명·저음·얼굴 슬램·귀 울림까지 포함 |
 | `ending.js` | 반전 엔딩 연출 |
 | `audio.js` | 효과음 합성, 위치 기반 소리, TTS |
 | `ui.js` / `style.css` / `index.html` | HUD, 메뉴, 쪽지, 다이얼, 설정 |
@@ -32,6 +33,12 @@
 - 모두가 보고 들어야 하는 효과는 `game.rpc('이름', ...)`, 한 사람에게만은 `game.rpcTo(id, '이름', ...)`. 이름은 `main.js` 의 `RPC` 표에 등록.
 - 선생님은 `game.allPlayers()` 의 모든 플레이어를 본다. 새 플레이어 속성이 필요하면 `Player`와 `RemotePlayer` 양쪽에 같은 이름으로 만든다(`pos, hidden, flashOn, focus, holding, downed, invuln, eye(), forward()`).
 - 혼자 하기(solo)는 같은 코드가 `role === 'solo'` 로 돈다. 혼자 하기가 깨지지 않았는지 항상 같이 확인.
+
+## 점프스케어 만들기
+- 새 연출은 `events.js` 에서 `hostScare(플레이어, 'advance'|'behind'|'slam', {d: 거리})` 로 부른다(호스트가 해당 플레이어에게만 RPC `scare` 전송). 여러 명이 가까이 있으면 `scareNear(x, y, 반경, 종류, 값)`.
+- 같은 연출을 두 번 보이지 않게 `S.flags['sc_...']` 로 한 번만. 추격 중·숨은 중·쓰러진 중에는 `hostScare` 가 자동으로 건너뛴다.
+- 화면 효과는 `game.scareFx(세기)`(흔들림·시야각 튐·색 번짐·심장), 얼굴은 `ui.faceSlam()`, 소리는 `audio.duck()`(정적) → `play(..., {bus:'sting'})` → `audio.muffle()`/`ringing()`(귀 울림).
+- 설정의 "화면 흔들림 줄이기"가 켜져 있으면 번쩍임·흔들림·시야각 튐이 약해진다. 새 연출도 이 설정을 존중할 것.
 
 ## 작업 규칙
 - 숫자(속도, 반경, 시간)는 코드에 직접 쓰지 말고 `config.js` 에 둔다.

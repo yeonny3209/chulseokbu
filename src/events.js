@@ -72,6 +72,7 @@ export class Events {
       case 'bell': this.hostBell(actor); break;
       case 'curtain': this.hostCurtain(actor); break;
       case 'exit': this.hostExit(actor); break;
+      case 'mirror': this.hostMirror(actor); break;
       default: break;
     }
   }
@@ -410,7 +411,8 @@ export class Events {
     if (g.world.curtainMesh) g.world.curtainMesh.visible = false;
     g.rpcTo(actor, 'play', 'paper', { gain: 0.5, rate: 0.7 });
     g.rpcTo(actor, 'toast', '커튼 뒤에는 아무도 없다.');
-    this.after(2.2, () => g.rpcTo(actor, 'quietScare'));
+    // the bed is empty... and then it breathes behind you
+    this.after(2.4, () => this.hostScare(this.playerOf(actor), 'behind'));
   }
 
   exitDoor() {
@@ -445,24 +447,60 @@ export class Events {
     S.flags.js1 = true;
     g.rpcTo(actor, 'phoneUI', true);
     g.rpcTo(actor, 'play', 'phone', { gain: 0.7 });
+    // 1) the phone shows the date, then dies — and so do the lights
     this.after(2.6, () => {
       g.rpcTo(actor, 'phoneUI', false);
       g.rpc('blackout', true);
       g.rpc('play', 'click', { gain: 0.8 });
     });
-    this.after(3.4, () => {
+    // 2) three heavy blows on the door from the corridor side
+    [3.5, 4.1, 4.6].forEach((t) => this.after(t, () => g.rpc('play3d', 'pound', [67, fy(2) + 1.2, 3.0], 1.8)));
+    // 3) the face smashes up against the glass
+    this.after(5.2, () => {
       g.rpc('ghostWindow', true);
-      g.rpc('play', 'stinger', { gain: 1.0 });
-      g.rpc('flash', 180);
-      g.rpc('shake', 1);
+      g.rpc('play', 'glass', { bus: 'sting', gain: 0.9 });
+      g.rpc('play', 'stinger', { bus: 'sting', gain: 1.0 });
+      g.rpc('flash', 160);
+      g.rpc('fx', 0.9);
     });
-    this.after(4.9, () => {
+    // 4) ...and then the flickering lights show it standing inside the room, closer each time
+    this.after(6.0, () => {
       g.rpc('ghostWindow', false);
-      g.rpc('blackout', false);
-      g.rpc('play', 'click', { gain: 0.8 });
+      this.scareNear(67, fy(2), 16, 'advance', { d: 6 });
+    });
+    this.after(10.5, () => {
       g.rpcTo(actor, 'toast', '…이제 나가자.', 3000);
       this.checkpoint('cp_phone', true, this.playerOf(actor));
     });
+  }
+
+  /** Host: start a scare on every player on this floor within `radius` of (x, ·). */
+  scareNear(x, y, radius, kind, params) {
+    const g = this.game;
+    for (const p of g.allPlayers()) {
+      if (p.downed || Math.abs(p.pos.y - y) > 2.5 || Math.abs(p.pos.x - x) > radius) continue;
+      g.rpcTo(p.id, 'scare', kind, params);
+    }
+  }
+
+  /** Host: scare one player (never while he hides, is down, or is being chased). */
+  hostScare(p, kind, params = {}) {
+    const g = this.game;
+    if (!p || p.hidden || p.downed || p.grabbed) return false;
+    if (g.teacher.active && g.teacher.state === 'chase') return false;
+    g.rpcTo(p.id, 'scare', kind, params);
+    return true;
+  }
+
+  /** E on a mirror: the first time, something is standing right behind you. */
+  mirrorLook() {
+    this.act('mirror');
+  }
+
+  hostMirror(actor) {
+    if (S.flags.sc_mirror) return;
+    S.flags.sc_mirror = true;
+    this.after(1.8, () => this.hostScare(this.playerOf(actor), 'behind'));
   }
 
   ghostWindow(on) {
@@ -514,11 +552,9 @@ export class Events {
     g.rpc('minBattery', 40);
     g.rpc('objective', 'escape');
     this.checkpoint('cp_safe', true, this.playerOf(this.safeActor || g.net.myId));
-    g.rpc('play', 'stinger', { gain: 1 });
+    g.rpc('scare', 'slam');
     g.rpc('pa', BROADCAST.chase);
-    g.rpc('flash', 200);
-    g.rpc('shake', 1);
-    this.after(1.2, () => this.finalChaseTeacher());
+    this.after(1.0, () => this.finalChaseTeacher());
   }
 
   finalChaseTeacher() {
@@ -645,8 +681,18 @@ export class Events {
       },
     });
 
+    // corridor ambushes: the lights flicker, and every time they come back he is closer
+    const ambush = (id, f, x0, x1, cond) => add({
+      id, f, x0, x1, z0: 0, z1: 2.8,
+      cond: () => cond() && !(g.teacher.active && g.teacher.state === 'chase'),
+      fn: (p) => { S.flags[id] = true; this.hostScare(p, 'advance', { d: 11 }); },
+    });
+    ambush('sc_corr2F', 1, 41, 49, () => !!S.keys.sciKey && S.flags.attendDone);
+    ambush('sc_corr3F', 2, 18, 26, () => !!S.flags.power);
+    ambush('sc_corr1F', 0, 44, 52, () => !!S.flags.reached1F && !S.flags.finalStarted);
+
     // quiet scares / ambience
-    const amb = (id, f, x0, x1, z0, z1, fn) => add({ id, f, x0, x1, z0, z1, fn, ambient: true });
+    const amb =(id, f, x0, x1, z0, z1, fn) => add({ id, f, x0, x1, z0, z1, fn, ambient: true });
     amb('amb_chalk', 1, 18, 27, 3.4, 10.6, () => g.rpc('play3d', 'chalk', [22.5, fy(1) + 1.5, 10.5], 0.9));
     amb('amb_locker', 1, 44, 52, 0, 2.8, () => g.rpc('play3d', 'slam', [20, fy(1) + 1, 0.5], 0.7, 1.2));
     amb('amb_knock', 2, 14, 24, 0, 2.8, () => { [0, 0.5, 1.0].forEach((d) => this.after(d, () => g.rpc('play3d', 'knock', [22, fy(2) + 1.2, 3.2], 1.0))); });
@@ -689,6 +735,6 @@ export class Events {
       arrive3F: !!S.flags.reached3F,
       arrive1F: !!S.flags.reached1F,
     };
-    for (const tr of this.triggers) tr.done = tr.ambient ? false : !!done[tr.id];
+    for (const tr of this.triggers) tr.done = tr.ambient ? false : !!(done[tr.id] ?? S.flags[tr.id]);
   }
 }

@@ -400,7 +400,7 @@ export class World {
   fixtureOn(fx) {
     if (!fx.on) return false;
     if (fx.gate && !S.flags[fx.gate]) return false;
-    if (fx.f === 2 && S.flags.blackout) return false;
+    if (S.flags.blackout && !fx.exit) return false; // scare blackout: every light dies (green exit signs stay)
     return true;
   }
 

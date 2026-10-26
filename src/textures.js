@@ -287,20 +287,111 @@ export function glowTexture(color = '255,255,255') {
   });
 }
 
+/** The teacher's true face: gaunt, cracked, sunken sockets with tiny pale pupils, a mouth that is far too wide. */
+function scaryFace(x, W) {
+  const s = W / 512;
+  const R = (a, b) => a + Math.random() * (b - a);
+  // 1. sickly skin, darker toward the edges
+  const bg = x.createRadialGradient(256 * s, 230 * s, 20 * s, 256 * s, 260 * s, 330 * s);
+  bg.addColorStop(0, '#a9a998'); bg.addColorStop(0.55, '#6f6f60'); bg.addColorStop(1, '#16160f');
+  x.fillStyle = bg;
+  x.fillRect(0, 0, W, W);
+  stains(x, W, W, 22, 'rgba(0,0,0,0.38)');
+  stains(x, W, W, 8, 'rgba(90,20,10,0.25)');
+  // 2. hollow cheeks and temples
+  for (const [cx, cy, rx, ry] of [[135, 330, 70, 95], [377, 330, 70, 95], [90, 170, 45, 80], [422, 170, 45, 80]]) {
+    const g = x.createRadialGradient(cx * s, cy * s, 2, cx * s, cy * s, Math.max(rx, ry) * s);
+    g.addColorStop(0, 'rgba(0,0,0,0.55)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    x.fillStyle = g;
+    x.fillRect(0, 0, W, W);
+  }
+  // 3. cracks in the skin
+  x.strokeStyle = 'rgba(10,5,5,0.55)';
+  x.lineWidth = 1.5 * s;
+  for (let i = 0; i < 26; i++) {
+    let px = R(60, 450) * s, py = R(40, 470) * s;
+    x.beginPath(); x.moveTo(px, py);
+    for (let k = 0; k < 6; k++) { px += R(-22, 22) * s; py += R(6, 26) * s; x.lineTo(px, py); }
+    x.stroke();
+  }
+  // 4. deep, uneven sockets with red veins and a tiny pale pupil
+  const socket = (cx, cy, rx, ry, rot) => {
+    const g = x.createRadialGradient(cx * s, cy * s, rx * 0.3 * s, cx * s, cy * s, rx * 1.9 * s);
+    g.addColorStop(0, 'rgba(0,0,0,0.9)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    x.fillStyle = g;
+    x.fillRect(0, 0, W, W);
+    x.save();
+    x.translate(cx * s, cy * s);
+    x.rotate(rot);
+    x.fillStyle = '#030202';
+    x.beginPath();
+    x.moveTo(-rx * s, 0);
+    x.bezierCurveTo(-rx * 0.6 * s, -ry * 1.2 * s, rx * 0.6 * s, -ry * 1.1 * s, rx * s, -ry * 0.1 * s);
+    x.bezierCurveTo(rx * 0.7 * s, ry * 1.0 * s, -rx * 0.5 * s, ry * 1.2 * s, -rx * s, 0);
+    x.fill();
+    x.strokeStyle = 'rgba(120,10,10,0.6)';
+    x.lineWidth = 1.2 * s;
+    for (let i = 0; i < 7; i++) {
+      const a = R(0, 6.28);
+      x.beginPath(); x.moveTo(Math.cos(a) * rx * s, Math.sin(a) * ry * 0.9 * s); x.lineTo(Math.cos(a) * rx * 1.7 * s, Math.sin(a) * ry * 1.6 * s); x.stroke();
+    }
+    const px = rx * R(-0.2, 0.25) * s, py = ry * R(-0.1, 0.3) * s;
+    const pg = x.createRadialGradient(px, py, 0, px, py, 9 * s);
+    pg.addColorStop(0, 'rgba(255,255,240,1)'); pg.addColorStop(0.35, 'rgba(230,230,210,0.9)'); pg.addColorStop(1, 'rgba(230,230,210,0)');
+    x.fillStyle = pg;
+    x.beginPath(); x.arc(px, py, 9 * s, 0, 7); x.fill();
+    x.restore();
+  };
+  socket(158, 200, 56, 66, 0.18);
+  socket(354, 196, 52, 70, -0.22);
+  // 5. nose: bridge shadow and two dark holes
+  x.strokeStyle = 'rgba(0,0,0,0.5)';
+  x.lineWidth = 6 * s;
+  x.beginPath(); x.moveTo(256 * s, 230 * s); x.quadraticCurveTo(248 * s, 300 * s, 262 * s, 342 * s); x.stroke();
+  x.fillStyle = '#060303';
+  x.beginPath(); x.ellipse(238 * s, 352 * s, 11 * s, 16 * s, 0.3, 0, 7); x.fill();
+  x.beginPath(); x.ellipse(280 * s, 352 * s, 11 * s, 16 * s, -0.3, 0, 7); x.fill();
+  // 6. a huge stretched mouth full of crooked teeth
+  x.fillStyle = '#120303';
+  x.beginPath(); x.moveTo(64 * s, 420 * s); x.quadraticCurveTo(256 * s, 362 * s, 448 * s, 418 * s); x.quadraticCurveTo(256 * s, 518 * s, 64 * s, 420 * s); x.fill();
+  x.fillStyle = '#cdc6a8';
+  for (let i = 0; i < 19; i++) {
+    const t = i / 18, px = (88 + t * 336) * s, topY = (420 - Math.sin(t * Math.PI) * 34) * s, hh = R(10, 28) * s;
+    x.beginPath(); x.moveTo(px - 7 * s, topY); x.lineTo(px + 7 * s, topY); x.lineTo(px + R(-3, 3) * s, topY + hh); x.closePath(); x.fill();
+  }
+  x.fillStyle = '#b9b296';
+  for (let i = 0; i < 16; i++) {
+    const t = i / 15, px = (104 + t * 304) * s, botY = (420 + Math.sin(t * Math.PI) * 40) * s, hh = R(8, 22) * s;
+    x.beginPath(); x.moveTo(px - 6 * s, botY); x.lineTo(px + 6 * s, botY); x.lineTo(px + R(-3, 3) * s, botY - hh); x.closePath(); x.fill();
+  }
+  // blood from the corners and down the chin
+  x.strokeStyle = 'rgba(110,8,8,0.8)';
+  x.lineWidth = 5 * s;
+  for (const sx of [64, 448]) { x.beginPath(); x.moveTo(sx * s, 420 * s); x.lineTo((sx + (sx < 256 ? -18 : 18)) * s, (420 - R(40, 90)) * s); x.stroke(); }
+  x.lineWidth = 4 * s;
+  x.strokeStyle = 'rgba(110,8,8,0.6)';
+  for (let i = 0; i < 5; i++) { const px = R(150, 360) * s; x.beginPath(); x.moveTo(px, 470 * s); x.lineTo(px + R(-6, 6) * s, (470 + R(20, 70)) * s); x.stroke(); }
+  // 7. stringy black hair across the face
+  for (let i = 0; i < 70; i++) {
+    const sx = R(10, 500) * s;
+    x.strokeStyle = `rgba(5,4,4,${R(0.45, 0.9)})`;
+    x.lineWidth = R(1, 3.2) * s;
+    x.beginPath(); x.moveTo(sx, -10 * s);
+    x.bezierCurveTo(sx + R(-60, 60) * s, 120 * s, sx + R(-80, 80) * s, 260 * s, sx + R(-70, 70) * s, R(220, 512) * s);
+    x.stroke();
+  }
+  // 8. vignette
+  const vg = x.createRadialGradient(256 * s, 256 * s, 150 * s, 256 * s, 256 * s, 380 * s);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.7)');
+  x.fillStyle = vg;
+  x.fillRect(0, 0, W, W);
+}
+
 export function faceTexture(kind = 'ghoul') {
-  return paintTexture(256, 256, (x, w, h) => {
+  const size = kind === 'ghoul' ? 512 : 256;
+  return paintTexture(size, size, (x, w, h) => {
     if (kind === 'ghoul') {
-      x.fillStyle = '#9b988c'; // pale, dead skin
-      x.fillRect(0, 0, w, h);
-      stains(x, w, h, 14, 'rgba(0,0,0,0.35)');
-      x.fillStyle = '#020202'; // empty eye sockets
-      x.beginPath(); x.ellipse(82, 108, 24, 34, 0.15, 0, 7); x.fill();
-      x.beginPath(); x.ellipse(174, 108, 24, 34, -0.15, 0, 7); x.fill();
-      x.fillStyle = '#1a0606'; // thin long mouth
-      x.beginPath(); x.ellipse(128, 190, 54, 8, 0, 0, 7); x.fill();
-      x.strokeStyle = 'rgba(0,0,0,0.5)';
-      x.lineWidth = 3;
-      x.beginPath(); x.moveTo(128, 120); x.lineTo(122, 160); x.stroke();
+      scaryFace(x, w);
     } else {
       x.fillStyle = '#c9a98a'; // the real, tired old man
       x.fillRect(0, 0, w, h);
