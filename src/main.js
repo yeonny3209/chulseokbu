@@ -815,12 +815,23 @@ class Game {
 
   updatePlayersHud() {
     if (!this.mp) { this.ui.setPlayersHud(null); return; }
-    const list = this.allPlayers().map((q) => ({
-      name: q === this.player ? this.net.myName : q.name,
-      color: PLAYER_COLORS[(q === this.player ? this.net.myIdx : q.idx) % PLAYER_COLORS.length],
-      downed: q.downed,
-      me: q === this.player,
-    }));
+    const now = performance.now();
+    const list = this.allPlayers().map((q) => {
+      const me = q === this.player;
+      let info = '나';
+      if (!me) {
+        if (!q.lastRecv) info = '연결 중…';
+        else if (now - q.lastRecv > 4000) info = '신호 없음';
+        else info = `${FLOOR_NAMES[q.floor]} ${Math.round(dist2D(q.pos.x, q.pos.z, this.player.pos.x, this.player.pos.z))}m`;
+      }
+      return {
+        name: me ? this.net.myName : q.name,
+        color: PLAYER_COLORS[(me ? this.net.myIdx : q.idx) % PLAYER_COLORS.length],
+        downed: q.downed,
+        me,
+        info,
+      };
+    });
     this.ui.setPlayersHud(list);
   }
 

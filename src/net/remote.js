@@ -22,8 +22,25 @@ function labelSprite(text, color) {
   x.fillText(text, 128, 32);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, fog: false }));
+  // drawn on top of walls so friends can find each other in the dark school
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false, fog: false }));
   sp.scale.set(1.1, 0.275, 1);
+  sp.renderOrder = 999;
+  return sp;
+}
+
+function glowSprite(color) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const x = c.getContext('2d');
+  const hex = `${(color >> 16) & 255},${(color >> 8) & 255},${color & 255}`;
+  const g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, `rgba(${hex},0.9)`);
+  g.addColorStop(1, `rgba(${hex},0)`);
+  x.fillStyle = g;
+  x.fillRect(0, 0, 64, 64);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, opacity: 0.55 }));
+  sp.scale.set(0.5, 0.5, 1);
   return sp;
 }
 
@@ -53,6 +70,7 @@ export class RemotePlayer {
     this.breathRisk = 0;
     this.invuln = 0;
     this.fresh = true;
+    this.lastRecv = 0; // when we last heard from this player (0 = never)
     this.stepDist = 0;
     this.avatar = this.buildAvatar();
     this.slot = game.claimRemoteSpot();
@@ -82,6 +100,7 @@ export class RemotePlayer {
 
   // ---- network ----
   applyState(s) {
+    this.lastRecv = performance.now();
     this.target.set(s.x, s.y, s.z);
     if (this.fresh) { this.pos.copy(this.target); this.fresh = false; }
     this.yaw = s.a;
@@ -109,9 +128,10 @@ export class RemotePlayer {
   // ---- avatar ----
   buildAvatar() {
     const g = new THREE.Group();
-    const cloth = new THREE.MeshStandardMaterial({ color: this.color, roughness: 0.9 });
-    const dark = new THREE.MeshStandardMaterial({ color: 0x23262b, roughness: 1 });
-    const skin = new THREE.MeshStandardMaterial({ color: 0xc9a98a, roughness: 0.9 });
+    // a faint self-glow so a friend is a visible silhouette even where no flashlight points
+    const cloth = new THREE.MeshStandardMaterial({ color: this.color, roughness: 0.9, emissive: this.color, emissiveIntensity: 0.22 });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x23262b, roughness: 1, emissive: 0x23262b, emissiveIntensity: 0.3 });
+    const skin = new THREE.MeshStandardMaterial({ color: 0xc9a98a, roughness: 0.9, emissive: 0xc9a98a, emissiveIntensity: 0.18 });
     const add = (geo, mat, x, y, z, parent = g) => {
       const m = new THREE.Mesh(geo, mat);
       m.position.set(x, y, z);
@@ -142,6 +162,9 @@ export class RemotePlayer {
     this.label = labelSprite(this.name, this.color);
     this.label.position.set(0, 2.0, 0);
     g.add(this.label);
+    this.glow = glowSprite(this.color);
+    this.glow.position.set(0, 1.62, 0);
+    g.add(this.glow);
     g.visible = false;
     return g;
   }
@@ -179,8 +202,11 @@ export class RemotePlayer {
     this.armR.rotation.x = -Math.PI / 2 - this.pitch * 0.7;
     this.torchMat.color.setHex(this.flashOn && !lying ? 0xfff2cc : 0x333333);
     const dist = g.player.pos.distanceTo(this.pos);
-    this.label.visible = dist < 16;
+    const sameFloor = Math.abs(g.player.pos.y - this.pos.y) < 2.5;
+    this.label.visible = sameFloor && dist < 60;
+    this.label.material.opacity = dist < 4 ? 1 : Math.max(0.35, 1 - (dist - 4) / 40);
     this.label.position.y = lying ? 0.7 : this.crouch ? 1.6 : 2.0;
+    this.glow.position.y = lying ? 0.3 : this.crouch ? 1.2 : 1.62;
 
     // flashlight beam
     const spot = g.remoteSpots[this.slot];

@@ -93,6 +93,7 @@ export class Events {
       // everybody starts with their own flashlight
       S.keys.flashlight = true;
       S.collected.flashlight = true;
+      g.player.flashOn = true; // lit from the start so friends can see each other
       g.ui.setObjective('corridor');
     } else {
       g.ui.setObjective('start');
@@ -114,6 +115,7 @@ export class Events {
     g.player.teleport(spot[0], fy(START.f), spot[1], START.yaw);
     g.ui.fade(1, 0);
     S.keys.flashlight = true;
+    g.player.flashOn = true;
     g.ui.setObjective('corridor');
     g.ui.setHeld(null);
     g.world.applyState();

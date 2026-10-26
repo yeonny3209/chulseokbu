@@ -100,7 +100,7 @@ export class UI {
       row.className = `prow${p.downed ? ' down' : ''}${p.me ? ' me' : ''}`;
       const dot = document.createElement('i');
       dot.style.background = `#${p.color.toString(16).padStart(6, '0')}`;
-      row.append(dot, document.createTextNode(` ${p.name}${p.downed ? ' ↓' : ''}`));
+      row.append(dot, document.createTextNode(` ${p.name}${p.info ? ` · ${p.info}` : ''}${p.downed ? ' ↓' : ''}`));
       el.append(row);
     }
   }
