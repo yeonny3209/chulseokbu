@@ -95,6 +95,22 @@ button:disabled { opacity: 0.3; cursor: default; }
 #stats { color: var(--fg); font-size: 17px; line-height: 2; margin: 24px 0; }
 #news { color: #b9c3cc; font-size: 15px; line-height: 1.9; border-top: 1px solid #333; padding-top: 18px; margin: 20px 0; text-align: left; }
 
+/* ---------- multiplayer ---------- */
+.field { display: flex; align-items: center; gap: 12px; margin: 12px 0 4px; justify-content: center; }
+.field label { color: var(--dim); font-size: 14px; width: 54px; text-align: right; }
+.field input { background: #0b0d0e; color: var(--fg); border: 1px solid rgba(220, 215, 195, 0.35); padding: 8px 10px; font-size: 16px; font-family: inherit; width: 200px; pointer-events: auto; }
+#lobby-code { font-size: 54px; letter-spacing: 0.35em; margin: 0 0 6px 0.35em; color: #e9d9a3; font-family: monospace; }
+#lobby-list { list-style: none; padding: 0; margin: 14px auto; width: 260px; text-align: left; font-size: 17px; line-height: 2; }
+#lobby-list i, #players i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; }
+#players { position: absolute; right: 24px; top: 40px; font-size: 13px; line-height: 1.7; text-align: right; color: var(--fg); text-shadow: 0 0 4px #000; opacity: 0.85; }
+#players .prow.down { color: #d98a8a; text-decoration: line-through; }
+#players .prow.me { font-weight: bold; }
+#down-overlay { position: fixed; inset: 0; pointer-events: none; display: flex; align-items: center; justify-content: center; text-align: center; font-size: 30px; letter-spacing: 0.25em; color: #d9b5b5; background: radial-gradient(ellipse at center, rgba(40, 0, 0, 0.35) 0%, rgba(30, 0, 0, 0.85) 90%); z-index: 5; }
+#down-overlay small { font-size: 14px; letter-spacing: 0.1em; color: #b79a9a; }
+#revive { position: absolute; left: 50%; top: 66%; transform: translateX(-50%); width: 180px; height: 5px; background: rgba(255, 255, 255, 0.15); opacity: 0; transition: opacity 0.2s; }
+#revive.on { opacity: 1; }
+#revive-fill { height: 100%; width: 0; background: #d9b5b5; }
+
 .setting { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; font-size: 15px; gap: 18px; }
 .setting input[type=range] { width: 220px; pointer-events: auto; }
 .setting select, .setting input[type=checkbox] { pointer-events: auto; }

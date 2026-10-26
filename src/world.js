@@ -316,7 +316,13 @@ export class World {
     return '문 열기 [E]';
   }
 
+  /** Player pressed E on a door. The host decides what happens (multiplayer-safe). */
   useDoor(door) {
+    this.game.events.act('door', { id: door.id });
+  }
+
+  /** Host only: open/close/unlock a door on behalf of `actor`. */
+  doorAction(door, actor) {
     const g = this.game;
     if (door.open) {
       this.setDoor(door, false, true);
@@ -325,14 +331,14 @@ export class World {
     if (this.isLocked(door)) {
       if (door.lock && S.keys[door.lock] && door.lock !== 'never') {
         S.doorUnlocked[door.id] = true;
-        g.ui.toast('열쇠로 문을 열었다.');
-        g.audio.play('unlock', { pos: [door.cx, door.y0 + 1, 3] });
+        g.rpcTo(actor, 'toast', '열쇠로 문을 열었다.');
+        g.rpc('play3d', 'unlock', [door.cx, door.y0 + 1, 3], 1);
         this.setDoor(door, true, true);
         return;
       }
-      g.audio.play('rattle', { pos: [door.cx, door.y0 + 1, 3], gain: 0.8 });
+      g.rpc('play3d', 'rattle', [door.cx, door.y0 + 1, 3], 0.8);
       g.noise(door.cx, door.y0 + 1, 3, CFG.noise.locked);
-      g.ui.toast(door.lock === 'never' ? '굳게 잠겨 있다. 열리지 않는다.' : '잠겨 있다.');
+      g.rpcTo(actor, 'toast', door.lock === 'never' ? '굳게 잠겨 있다. 열리지 않는다.' : '잠겨 있다.');
       return;
     }
     this.setDoor(door, true, true);
@@ -625,5 +631,17 @@ export class World {
       d.group.rotation.y = d.ang;
     }
     for (const it of this.items) it.mesh.visible = !S.collected[it.id];
+    if (this.curtainMesh) this.curtainMesh.visible = !S.flags.curtain;
+  }
+
+  /** Client: the host sent new shared progress — make doors/items match (animated, with sound). */
+  syncFromState() {
+    for (const d of this.doors) {
+      const open = !!S.doorOpen[d.id];
+      if (d.open !== open) this.setDoor(d, open, false);
+    }
+    for (const it of this.items) it.mesh.visible = !S.collected[it.id];
+    if (this.curtainMesh) this.curtainMesh.visible = !S.flags.curtain;
+    this.game.onSharedChanged();
   }
 }

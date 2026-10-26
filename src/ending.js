@@ -96,7 +96,7 @@ export class Ending {
     g.ui.showHud(false);
     g.player.frozen = true;
     g.player.flashOn = false;
-    g.player.teleport(OX + 4.5, 0, 5.4, Math.PI);
+    g.player.teleport(OX + 2.0 + (g.net.myIdx || 0) * 1.0, 0, 5.4, Math.PI);
     g.scene.fog.density = 0.012;
     g.ambient.intensity = 1.8;
     g.ui.fade(0, 0);

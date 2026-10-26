@@ -1,11 +1,12 @@
 // The teacher: procedural model + state machine (patrol / investigate / search / chase / stunned / grab / scripted).
+// Multiplayer: only the host runs the AI. It watches every player (local and remote); clients just
+// receive the teacher's position/state (applyNet) and play footsteps/animation locally.
 import * as THREE from 'three';
 import { CFG } from './config.js';
-import { S, settings } from './state.js';
+import { settings } from './state.js';
 import { clamp, angleDiff, dist2D, pick, rand, lerp } from './util.js';
 import { faceTexture } from './textures.js';
 import { ATTEND_LINES } from './story.js';
-import { FLOOR_H, fy } from './layout.js';
 
 const T = CFG.teacher;
 
@@ -70,8 +71,6 @@ export function createTeacherModel(kind = 'ghoul') {
   face.position.set(0, 0.1 * s, 0.128 * s);
   head.add(face);
 
-  const scale = ghoul ? 1 : 1;
-  root.scale.setScalar(scale);
   return { root, body, torso, legL, legR, armL, armR, head, neck, ruler, book, height: ghoul ? 2.4 : 1.7 };
 }
 
@@ -105,7 +104,9 @@ export class Teacher {
     this.spotIdx = 0;
     this.spotT = 0;
     this.spotRolled = false;
-    this.knowsHide = null;
+    this.knowsHides = new Set(); // hiding places he saw somebody enter
+    this.target = null; // player being chased
+    this.grabTarget = null;
     this.stunCount = 0;
     this.focusT = 0;
     this.grace = 0;
@@ -118,18 +119,18 @@ export class Teacher {
     this.chalkT = rand(6, 12);
     this.voiceT = rand(5, 9);
     this.stuckT = 0;
-    this.lastPos = new THREE.Vector3();
     this.pending = null;
-    this.catchCB = null;
-    this.grabT = 0;
     this.lure = null;
-    this.hideCheckT = 0;
+    this.netState = null; // clients: last snapshot from the host
+    this.netFresh = true;
   }
 
   get floor() { return this.game.world.floorOf(this.pos.y + 0.5); }
   get nav() { return this.game.nav; }
   get eyePos() { return new THREE.Vector3(this.pos.x, this.pos.y + 2.1, this.pos.z); }
   get diff() { return CFG.difficulty[settings.difficulty]; }
+  get isClient() { return this.game.net.role === 'client'; }
+  get players() { return this.game.allPlayers(); }
 
   distanceTo(v) { return Math.hypot(v.x - this.pos.x, (v.y - this.pos.y) * 0.5, v.z - this.pos.z); }
 
@@ -140,7 +141,6 @@ export class Teacher {
     this.group.position.copy(this.pos);
     this.group.rotation.y = heading;
     this.path = [];
-    this.lastPos.copy(this.pos);
   }
 
   placeAtNode(id, heading = this.heading) {
@@ -191,6 +191,7 @@ export class Teacher {
     this.seq = null;
     this.lure = null;
     this.awareness = 0;
+    this.target = null;
     if (!this.route.length) this.setRoute('f2');
     // resume from the route node nearest to us
     const here = this.nav.nearest(this.pos.x, this.pos.y, this.pos.z);
@@ -219,7 +220,7 @@ export class Teacher {
   }
 
   setPath(nodes, speed, cb, tail = null) {
-    let list = (nodes || []).map((n) => ({ x: n.x, z: n.z }));
+    const list = (nodes || []).map((n) => ({ x: n.x, z: n.z }));
     if (list.length > 1) {
       const d0 = dist2D(this.pos.x, this.pos.z, list[0].x, list[0].z);
       const d01 = dist2D(list[0].x, list[0].z, list[1].x, list[1].z);
@@ -239,8 +240,7 @@ export class Teacher {
     const d = Math.hypot(dx, dz);
     if (d < 0.25) {
       this.path.shift();
-      if (!this.path.length) return true;
-      return false;
+      return this.path.length === 0;
     }
     const step = Math.min(d, this.speed * dt);
     this.pos.x += (dx / d) * step;
@@ -260,24 +260,18 @@ export class Teacher {
     if (g > -Infinity) this.pos.y = g;
   }
 
-  // ------------------------------------------------------------ perception
-  /** Player eye (or hiding spot camera). */
-  playerEye() { return this.game.player.eye(); }
-
-  hasLOS(maxD = 40) {
-    const p = this.game.player;
+  // ------------------------------------------------------------ perception (works on any player-like object)
+  hasLOS(p, maxD = 40) {
     const e = this.eyePos;
-    const pe = this.playerEye();
+    const pe = p.eye();
     if (Math.abs(pe.y - e.y) > 3.2) return false;
     if (Math.hypot(pe.x - e.x, pe.z - e.z) > maxD) return false;
     return this.game.world.los(e.x, e.y, e.z, pe.x, pe.y, pe.z);
   }
 
-  canSee() {
-    const g = this.game;
-    const p = g.player;
-    if (!this.active || this.grace > 0 || this.noDetect) return false;
-    if (p.hidden && this.knowsHide !== p.hidden.id) return false;
+  canSee(p) {
+    if (!this.active || this.grace > 0 || this.noDetect || p.downed || (p.invuln || 0) > 0) return false;
+    if (p.hidden && !this.knowsHides.has(p.hidden.id)) return false;
     const d = dist2D(this.pos.x, this.pos.z, p.pos.x, p.pos.z);
     const maxD = (p.flashOn ? T.viewDistLight : T.viewDist) * this.diff.view;
     const sense = T.senseRadius * this.diff.view;
@@ -285,12 +279,12 @@ export class Teacher {
     const ang = Math.abs(angleDiff(this.heading, Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z)));
     const inCone = ang < (T.viewAngleDeg * Math.PI) / 360;
     if (!inCone && d > sense) return false;
-    return this.hasLOS(maxD);
+    return this.hasLOS(p, maxD);
   }
 
-  /** Called for every noise the player (or a thrown item) makes. */
+  /** Called for every noise a player (or a thrown item) makes. */
   hear(x, y, z, radius, kind) {
-    if (!this.active || this.grace > 0 || this.state === 'chase' || this.state === 'grab' || this.state === 'stunned' || this.state === 'scripted') return;
+    if (!this.active || this.grace > 0 || this.isClient || ['chase', 'grab', 'stunned', 'scripted'].includes(this.state)) return;
     const dy = Math.abs(y - this.pos.y);
     const eff = radius * (dy > 2.5 ? 0.45 : 1);
     const d = dist2D(x, z, this.pos.x, this.pos.z);
@@ -307,28 +301,37 @@ export class Teacher {
     this.awareness = 0;
     this.t = 0;
     this.goToPos(x, y, z, kind === 'bell' ? 3.0 : T.investigate, () => this.beginSearch(this.lure ? this.lure.t : T.searchTime * 0.6));
-    this.game.audio.play('knock', { pos: [this.pos.x, this.pos.y + 1, this.pos.z], gain: 0.15, ...this.game.occlusion(this.pos.x, this.pos.y + 1, this.pos.z) });
+    this.game.rpc('play3d', 'knock', [this.pos.x, this.pos.y + 1, this.pos.z], 0.15);
   }
 
-  onPlayerHide(h) {
+  onPlayerHide(h, p) {
     if (!this.active) return;
-    this.knowsHide = null;
-    if (this.state === 'chase' && this.hasLOS(20)) this.knowsHide = h.id;
-    else if (this.canSeeNoHide()) this.knowsHide = h.id;
+    if (this.state === 'chase' && this.hasLOS(p, 20)) this.knowsHides.add(h.id);
+    else if (this.canSeeNoHide(p)) this.knowsHides.add(h.id);
   }
 
-  canSeeNoHide() {
-    const p = this.game.player;
+  canSeeNoHide(p) {
     const d = dist2D(this.pos.x, this.pos.z, p.pos.x, p.pos.z);
     if (d > T.viewDist) return false;
     const ang = Math.abs(angleDiff(this.heading, Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z)));
-    return ang < 0.7 && this.hasLOS(T.viewDist);
+    return ang < 0.7 && this.hasLOS(p, T.viewDist);
   }
 
-  onPlayerUnhide() { this.knowsHide = null; }
+  onPlayerUnhide(h) { this.knowsHides.delete(h.id); }
 
   // ------------------------------------------------------------ state transitions
-  startChase(announce = true) {
+  nearestVisible(maxD = 34) {
+    let best = null, bd = Infinity;
+    for (const p of this.players) {
+      if (p.downed || (p.invuln || 0) > 0) continue;
+      if (p.hidden && !this.knowsHides.has(p.hidden.id)) continue;
+      const d = dist2D(this.pos.x, this.pos.z, p.pos.x, p.pos.z);
+      if (d < bd && d < maxD && Math.abs(p.pos.y - this.pos.y) < 3 && this.hasLOS(p, maxD)) { bd = d; best = p; }
+    }
+    return best;
+  }
+
+  startChase(announce = true, target = null) {
     if (this.state === 'chase') return;
     const g = this.game;
     this.seq = null;
@@ -338,14 +341,9 @@ export class Teacher {
     this.loseT = 0;
     this.stunCount = 0;
     this.path = [];
-    this.lastKnown = g.player.pos.clone();
-    if (announce) {
-      g.audio.play('spot', { gain: 0.9 });
-      g.audio.say('17번!', { vol: 1, pitch: 0.2, rate: 0.9, interrupt: true });
-      g.ui.subtitle('"17번!"', 1800);
-      g.shake = 0.6;
-    }
-    g.audio.setChase(1);
+    this.target = target || this.nearestVisible(60) || this.players.find((p) => !p.downed) || this.players[0];
+    this.lastKnown = this.target.pos.clone();
+    if (announce) g.rpc('chaseAlert');
   }
 
   beginSearch(time = T.searchTime) {
@@ -357,17 +355,17 @@ export class Teacher {
     this.spotT = 0;
     this.spotIdx = -1;
     this.spotRolled = false;
+    this.target = null;
     // hiding places near here (same floor), nearest first
     const f = this.floor;
     this.spots = g.world.hides
       .filter((h) => h.f === f && dist2D(h.x, h.z, this.pos.x, this.pos.z) < 9)
       .sort((a, b) => dist2D(a.x, a.z, this.pos.x, this.pos.z) - dist2D(b.x, b.z, this.pos.x, this.pos.z))
       .slice(0, 3);
-    if (this.knowsHide) {
-      const sp = g.world.hides.find((h) => h.id === this.knowsHide);
-      if (sp) this.spots = [sp, ...this.spots.filter((s) => s !== sp)];
+    for (const id of this.knowsHides) {
+      const sp = g.world.hides.find((h) => h.id === id);
+      if (sp && sp.f === f) this.spots = [sp, ...this.spots.filter((s) => s !== sp)];
     }
-    g.audio.setChase(0);
   }
 
   stun(dur) {
@@ -375,82 +373,85 @@ export class Teacher {
     this.t = 0;
     this.stunDur = dur;
     this.path = [];
-    this.game.audio.play('creakHeavy', { pos: [this.pos.x, this.pos.y + 1.5, this.pos.z], gain: 0.7, rate: 0.7 });
-    this.game.audio.say('윽…', { vol: 0.8, pitch: 0.1, rate: 0.6 });
+    this.game.rpc('play3d', 'creakHeavy', [this.pos.x, this.pos.y + 1.5, this.pos.z], 0.7, 0.7);
+    this.say('윽…', 0.8);
   }
 
-  grab() {
-    if (this.state === 'grab') return;
+  /** Grab one player: they get pulled in and then go down (or the run restarts when alone). */
+  grab(p) {
+    if (this.state === 'grab' || !p) return;
     const g = this.game;
     this.state = 'grab';
+    this.grabTarget = p;
     this.t = 0;
     this.path = [];
-    g.player.frozen = true;
-    g.player.flashOn = false;
-    g.audio.setChase(0);
-    g.audio.play('stingerSoft', { gain: 0.9 });
-    g.ui.setPrompt(null);
-    this.game.inputLocked = true;
-    if (g.player.hidden) {
-      const h = g.player.hidden;
-      // drag the player out in front of the teacher
-      this.place(h.exit.x, g.player.pos.y, h.exit.z, this.heading);
-      g.player.hidden = null;
-      g.ui.hideOverlay(null);
-      g.ui.breath(false);
-      g.player.camY = CFG.player.eye;
+    this.grabDone = false;
+    if (p.hidden) {
+      const h = p.hidden;
+      // drag the player out of the hiding place in front of the teacher
+      this.place(h.exit.x, p.pos.y, h.exit.z, this.heading);
       this.turnTo(Math.atan2(h.x - h.exit.x, h.z - h.exit.z), 99, 99);
     }
+    g.onGrabbed(p);
   }
 
   // ------------------------------------------------------------ voice & foley
+  /** Host: speak a line everyone nearby hears. */
   say(text, loud = 1) {
+    if (this.isClient) return;
+    this.game.rpc('say', text, loud, [this.pos.x, this.pos.y, this.pos.z]);
+  }
+
+  /** Every machine: play the line with volume from the distance to the local player. */
+  sayLocal(text, loud = 1, pos = null) {
     const g = this.game;
     const p = g.player;
-    const d = this.distanceTo(p.pos);
-    const sameFloor = Math.abs(p.pos.y - this.pos.y) < 2.5;
+    const src = pos ? new THREE.Vector3(pos[0], pos[1], pos[2]) : this.pos;
+    const d = Math.hypot(p.pos.x - src.x, p.pos.z - src.z);
+    const sameFloor = Math.abs(p.pos.y - src.y) < 2.5;
     let vol = clamp(1 - d / (sameFloor ? 34 : 18), 0, 1) * loud;
-    if (!g.world.los(this.eyePos.x, this.eyePos.y, this.eyePos.z, p.eye().x, p.eye().y, p.eye().z)) vol *= 0.5;
+    const e = p.eye();
+    if (!g.world.los(src.x, src.y + 2.1, src.z, e.x, e.y, e.z)) vol *= 0.5;
     if (vol < 0.05) return;
     const spoke = g.audio.say(text, { vol, pitch: 0.12, rate: 0.7 });
-    if (!spoke) g.audio.play('murmur', { pos: [this.pos.x, this.pos.y + 2, this.pos.z], gain: vol * 0.7, rate: rand(0.8, 1.1) });
+    if (!spoke) g.audio.play('murmur', { pos: [src.x, src.y + 2, src.z], gain: vol * 0.7, rate: rand(0.8, 1.1) });
     if (d < 22 && sameFloor) g.ui.subtitle(`선생님: "${text}"`, 2400);
   }
 
-  foley(dt, moving) {
+  foley(dt, moved) {
     const g = this.game;
     const occ = () => g.occlusion(this.pos.x, this.pos.y + 1, this.pos.z);
     const at = [this.pos.x, this.pos.y + 0.2, this.pos.z];
-    // footsteps
     const strideLen = this.state === 'chase' ? 1.6 : 1.0;
-    if (moving && this.stride > strideLen) {
+    if (moved && this.stride > strideLen) {
       this.stride = 0;
       g.audio.play('stepHeavy', { pos: at, gain: this.state === 'chase' ? 0.9 : 0.55, rate: this.state === 'chase' ? 1.15 : 1, ...occ() });
     }
     if (this.state === 'patrol' || this.state === 'search' || this.state === 'investigate') {
       this.rulerT -= dt;
-      if (this.rulerT <= 0 && moving) {
+      if (this.rulerT <= 0 && moved) {
         this.rulerT = rand(0.9, 1.7);
-        const side = new THREE.Vector3(Math.cos(this.heading), 0, -Math.sin(this.heading));
-        const wall = side.multiplyScalar(0.8);
-        g.audio.play('ruler', { pos: [this.pos.x + wall.x, this.pos.y + 1.0, this.pos.z + wall.z], gain: 0.7, ...occ() });
+        const side = new THREE.Vector3(Math.cos(this.heading), 0, -Math.sin(this.heading)).multiplyScalar(0.8);
+        g.audio.play('ruler', { pos: [this.pos.x + side.x, this.pos.y + 1.0, this.pos.z + side.z], gain: 0.7, ...occ() });
       }
       this.chalkT -= dt;
       if (this.chalkT <= 0) {
         this.chalkT = rand(9, 16);
         g.audio.play('chalk', { pos: [this.pos.x, this.pos.y + 1.3, this.pos.z], gain: 0.6, ...occ() });
       }
-      this.voiceT -= dt;
-      if (this.voiceT <= 0) {
-        this.voiceT = rand(7, 12);
-        this.say(pick(ATTEND_LINES));
+      if (!this.isClient) {
+        this.voiceT -= dt;
+        if (this.voiceT <= 0) {
+          this.voiceT = rand(7, 12);
+          this.say(pick(ATTEND_LINES));
+        }
       }
     }
   }
 
   // ------------------------------------------------------------ main update
   update(dt) {
-    const g = this.game;
+    if (this.isClient) { this.updateClient(dt); return; }
     this.updatePending(dt);
     if (!this.active) return;
     if (this.grace > 0) this.grace -= dt;
@@ -480,14 +481,58 @@ export class Teacher {
     this.animate(dt, moved);
   }
 
+  // ---- clients only draw what the host tells them
+  netSnapshot() {
+    return {
+      a: this.active ? 1 : 0, s: this.state, x: this.pos.x, y: this.pos.y, z: this.pos.z, h: this.heading,
+      w: this.waitAction === 'attend' && this.waitT > 0 ? 1 : 0,
+    };
+  }
+
+  applyNet(s) {
+    this.netState = s;
+  }
+
+  updateClient(dt) {
+    const s = this.netState;
+    if (!s) return;
+    this.active = !!s.a;
+    this.group.visible = this.active;
+    if (!this.active) { this.state = 'idle'; return; }
+    const prev = this.pos.clone();
+    if (this.netFresh || this.pos.distanceTo(new THREE.Vector3(s.x, s.y, s.z)) > 6) {
+      this.pos.set(s.x, s.y, s.z);
+      this.heading = s.h;
+      this.netFresh = false;
+    } else {
+      const k = 1 - Math.exp(-12 * dt);
+      this.pos.x += (s.x - this.pos.x) * k;
+      this.pos.y += (s.y - this.pos.y) * k;
+      this.pos.z += (s.z - this.pos.z) * k;
+      this.heading += angleDiff(this.heading, s.h) * (1 - Math.exp(-14 * dt));
+    }
+    this.state = s.s;
+    this.waitT = s.w ? 1 : 0;
+    this.waitAction = s.w ? 'attend' : null;
+    this.t += dt;
+    const step = Math.hypot(this.pos.x - prev.x, this.pos.z - prev.z);
+    this.stride += step;
+    const moved = step / Math.max(dt, 0.001) > 0.25;
+    this.foley(dt, moved);
+    this.animate(dt, moved);
+  }
+
   detect(dt) {
-    if (this.state === 'chase' || this.state === 'grab' || this.state === 'stunned' || this.state === 'idle') return;
-    if (this.canSee()) {
-      const p = this.game.player;
+    if (['chase', 'grab', 'stunned', 'idle'].includes(this.state)) return;
+    let best = null, bd = Infinity;
+    for (const p of this.players) {
+      if (!this.canSee(p)) continue;
       const d = dist2D(this.pos.x, this.pos.z, p.pos.x, p.pos.z);
-      this.awareness += dt * (d < 6 ? 2.2 : 1);
-      this.headLook = true;
-      if (this.awareness >= T.detectTime) this.startChase();
+      if (d < bd) { bd = d; best = p; }
+    }
+    if (best) {
+      this.awareness += dt * (bd < 6 ? 2.2 : 1);
+      if (this.awareness >= T.detectTime) this.startChase(true, best);
     } else {
       this.awareness = Math.max(0, this.awareness - dt * 0.8);
     }
@@ -507,11 +552,16 @@ export class Teacher {
     this.pending.t -= dt;
     if (this.pending.t > 0) return;
     const g = this.game;
-    const p = g.player;
     const n = this.nav.node(this.pending.id);
-    const far = dist2D(n.x, n.z, p.pos.x, p.pos.z) > 16 || Math.abs(n.y - p.pos.y) > 2.5;
-    const seen = g.world.los(n.x, n.y + 2, n.z, p.eye().x, p.eye().y, p.eye().z) && dist2D(n.x, n.z, p.pos.x, p.pos.z) < 30;
-    if (far && !seen) {
+    // only appear where no player is close or looking
+    let blocked = false;
+    for (const p of this.players) {
+      const far = dist2D(n.x, n.z, p.pos.x, p.pos.z) > 16 || Math.abs(n.y - p.pos.y) > 2.5;
+      const e = p.eye();
+      const seen = g.world.los(n.x, n.y + 2, n.z, e.x, e.y, e.z) && dist2D(n.x, n.z, p.pos.x, p.pos.z) < 30;
+      if (!far || seen) { blocked = true; break; }
+    }
+    if (!blocked) {
       const pd = this.pending;
       this.pending = null;
       this.activate(true);
@@ -526,7 +576,7 @@ export class Teacher {
     }
   }
 
-  /** Move to another floor/location once the player is not looking. */
+  /** Move to another floor/location once no player is looking. */
   relocateWhenUnseen(nodeId, route, { delay = 0, heading = 0, cb = null } = {}) {
     this.pending = { id: nodeId, route, t: delay, heading, cb };
   }
@@ -546,7 +596,7 @@ export class Teacher {
         if (r.attend) {
           this.waitT = rand(7, 11);
           this.waitAction = 'attend';
-          this.attendLine = 0;
+          this.attendT = 0;
           this.turnTo(0, 1, 99); // face the board
         } else if (Math.random() < 0.35) {
           this.waitT = rand(1.2, 2.4);
@@ -566,7 +616,7 @@ export class Teacher {
       if (this.attendT <= 0) {
         this.attendT = rand(1.6, 2.4);
         this.say(pick(ATTEND_LINES));
-        this.game.audio.play('chalk', { pos: [this.pos.x, this.pos.y + 1.2, this.pos.z], gain: 0.5, ...this.game.occlusion(this.pos.x, this.pos.y + 1, this.pos.z) });
+        this.game.rpc('play3d', 'chalk', [this.pos.x, this.pos.y + 1.2, this.pos.z], 0.5);
       }
     } else if (this.waitAction === 'look') {
       this.turnTo(this.heading + Math.sin(this.t * 1.6) * 1.2, dt, 2);
@@ -584,7 +634,6 @@ export class Teacher {
 
   // ---- search
   updateSearch(dt) {
-    this.searchT = (this.searchT || 0);
     if (this.t < 2.2) {
       this.turnTo(this.heading + Math.sin(this.t * 2.2) * 1.4, dt, 3);
       return;
@@ -611,11 +660,12 @@ export class Teacher {
     if (!this.spotRolled && this.spotT > 0.8) {
       this.spotRolled = true;
       const g = this.game;
-      g.audio.play('knock', { pos: [sp.x, this.pos.y + 1, sp.z], gain: 0.8, ...g.occlusion(sp.x, this.pos.y + 1, sp.z) });
-      g.audio.play('creak', { pos: [sp.x, this.pos.y + 1, sp.z], gain: 0.5, rate: 1.4 });
-      const p = g.player;
-      if (p.hidden && p.hidden.id === sp.id && p.hideTime > T.hideProtect) {
-        if (this.knowsHide === sp.id || Math.random() < this.diff.openChance) { this.grab(); return; }
+      g.rpc('play3d', 'knock', [sp.x, this.pos.y + 1, sp.z], 0.8);
+      g.rpc('play3d', 'creak', [sp.x, this.pos.y + 1, sp.z], 0.5, 1.4);
+      for (const p of this.players) {
+        if (p.hidden && p.hidden.id === sp.id && p.hideTime > T.hideProtect && !p.downed) {
+          if (this.knowsHides.has(sp.id) || Math.random() < this.diff.openChance) { this.grab(p); return; }
+        }
       }
     }
     if (this.spotT > 2.2) {
@@ -631,7 +681,6 @@ export class Teacher {
   }
 
   endSearch() {
-    this.knowsHide = null;
     this.lure = null;
     this.stunCount = 0;
     this.startPatrol();
@@ -640,23 +689,35 @@ export class Teacher {
   // ---- chase
   updateChase(dt) {
     const g = this.game;
-    const p = g.player;
     const speed = this.diff.chase;
-    const los = !p.hidden || this.knowsHide === p.hidden.id ? this.hasLOS(34) : false;
+    let p = this.target;
+    // lose a target that went down or is no longer a valid player
+    if (!p || p.downed || !this.players.includes(p)) {
+      p = this.nearestVisible(40);
+      this.target = p;
+      if (!p) { this.beginSearch(T.searchTime); return; }
+      this.lastKnown = p.pos.clone();
+    }
+    // switch to somebody clearly closer
+    if (Math.floor(this.t * 2) !== Math.floor((this.t - dt) * 2)) {
+      const near = this.nearestVisible(20);
+      if (near && near !== p && dist2D(this.pos.x, this.pos.z, near.pos.x, near.pos.z) + 3 < dist2D(this.pos.x, this.pos.z, p.pos.x, p.pos.z)) { this.target = near; p = near; }
+    }
+    const canTrack = !p.hidden || this.knowsHides.has(p.hidden.id);
+    const los = canTrack ? this.hasLOS(p, 34) : false;
     if (los) {
       this.loseT = 0;
       this.lastKnown = p.pos.clone();
     } else {
       this.loseT += dt;
     }
-    if (p.hidden && this.knowsHide === p.hidden.id) {
+    if (p.hidden && this.knowsHides.has(p.hidden.id)) {
       // he saw you hide: go straight to the spot
       const h = p.hidden;
       this.speed = speed;
-      const d = dist2D(this.pos.x, this.pos.z, h.exit.x, h.exit.z);
-      if (d < 1.1) {
-        g.audio.play('slam', { pos: [h.x, this.pos.y + 1, h.z], gain: 0.9 });
-        this.grab();
+      if (dist2D(this.pos.x, this.pos.z, h.exit.x, h.exit.z) < 1.1) {
+        g.rpc('play3d', 'slam', [h.x, this.pos.y + 1, h.z], 0.9);
+        this.grab(p);
         return;
       }
       this.moveToward(h.exit.x, h.exit.z, speed, dt, true);
@@ -664,7 +725,7 @@ export class Teacher {
     }
     const d = dist2D(this.pos.x, this.pos.z, p.pos.x, p.pos.z);
     if (los && Math.abs(p.pos.y - this.pos.y) < 1.8) {
-      if (d < T.catchDist) { this.grab(); return; }
+      if (d < T.catchDist) { this.grab(p); return; }
       if (d < 8 || this.directClear(p.pos.x, p.pos.z)) {
         this.path = [];
         this.moveToward(p.pos.x, p.pos.z, speed, dt, true);
@@ -681,11 +742,9 @@ export class Teacher {
     }
     if (this.follow(dt)) {
       this.path = [];
-      if (this.loseT > T.loseTime || !los) {
-        if (this.loseT > 0.8) {
-          this.noiseTarget = this.lastKnown;
-          this.beginSearch(T.searchTime);
-        }
+      if (this.loseT > 0.8 && (this.loseT > T.loseTime || !los)) {
+        this.noiseTarget = this.lastKnown;
+        this.beginSearch(T.searchTime);
       }
     }
     if (this.loseT > T.loseTime + 6) this.beginSearch(T.searchTime);
@@ -708,30 +767,31 @@ export class Teacher {
   // ---- stun
   updateStunned(dt) {
     if (this.t > this.stunDur) {
-      const g = this.game;
-      if (this.hasLOS(20) && !g.player.hidden) { this.state = 'chase'; this.t = 0; this.loseT = 0; g.audio.setChase(1); }
+      const p = this.nearestVisible(20);
+      if (p) { this.state = 'chase'; this.t = 0; this.loseT = 0; this.target = p; this.lastKnown = p.pos.clone(); }
       else this.beginSearch(T.searchTime);
     }
   }
 
   stunCheck(dt) {
-    const g = this.game;
-    const p = g.player;
-    if (!p.focus || !p.flashOn || this.state === 'stunned' || this.state === 'grab' || this.state === 'scripted') { this.focusT = Math.max(0, this.focusT - dt * 2); return; }
+    if (['stunned', 'grab', 'scripted', 'idle'].includes(this.state)) { this.focusT = Math.max(0, this.focusT - dt * 2); return; }
     const head = new THREE.Vector3(this.pos.x, this.pos.y + 2.15, this.pos.z);
-    const eye = p.eye();
-    const to = head.clone().sub(eye);
-    const d = to.length();
-    if (d > 12) { this.focusT = Math.max(0, this.focusT - dt * 2); return; }
-    const ang = to.normalize().angleTo(p.forward());
-    if (ang < 0.16 && g.world.los(eye.x, eye.y, eye.z, head.x, head.y, head.z)) {
+    let hit = false;
+    for (const p of this.players) {
+      if (!p.focus || !p.flashOn || p.downed) continue;
+      const eye = p.eye();
+      const to = head.clone().sub(eye);
+      if (to.length() > 12) continue;
+      if (to.normalize().angleTo(p.forward()) < 0.16 && this.game.world.los(eye.x, eye.y, eye.z, head.x, head.y, head.z)) { hit = true; break; }
+    }
+    if (hit) {
       this.focusT += dt;
       if (this.focusT >= CFG.flashlight.focusTime) {
         this.focusT = 0;
         const dur = T.stunTimes[Math.min(this.stunCount, T.stunTimes.length - 1)];
         this.stunCount++;
         if (dur > 0) this.stun(dur);
-        else g.ui.toast('빛에 익숙해졌다…');
+        else this.game.rpc('toast', '빛에 익숙해졌다…');
       }
     } else {
       this.focusT = Math.max(0, this.focusT - dt * 2);
@@ -740,16 +800,17 @@ export class Teacher {
 
   // ---- breathing near a hiding player
   breathCheck(dt) {
-    const p = this.game.player;
-    if (!p.hidden || !this.diff.breath) { if (p.breathRisk > 0) p.breathRisk = Math.max(0, p.breathRisk - dt * 0.3); return; }
-    const d = dist2D(this.pos.x, this.pos.z, p.pos.x, p.pos.z);
-    if (d < 2.6 && Math.abs(p.pos.y - this.pos.y) < 2 && this.state !== 'idle') {
-      if (!p.holding && p.hideTime > T.hideProtect) {
-        p.breathRisk += dt * (this.state === 'search' ? 0.5 : 0.28);
-        if (Math.random() < dt * 1.5) this.game.audio.play('breathOut', { gain: 0.25 + p.breathRisk * 0.5, rate: 1.2 });
-        if (p.breathRisk >= 1) { this.knowsHide = p.hidden.id; this.grab(); }
-      }
-    } else p.breathRisk = Math.max(0, p.breathRisk - dt * 0.4);
+    for (const p of this.players) {
+      if (!p.hidden || !this.diff.breath || p.downed) { if (p.breathRisk > 0) p.breathRisk = Math.max(0, p.breathRisk - dt * 0.3); continue; }
+      const d = dist2D(this.pos.x, this.pos.z, p.pos.x, p.pos.z);
+      if (d < 2.6 && Math.abs(p.pos.y - this.pos.y) < 2 && this.state !== 'idle') {
+        if (!p.holding && p.hideTime > T.hideProtect) {
+          p.breathRisk += dt * (this.state === 'search' ? 0.5 : 0.28);
+          if (Math.random() < dt * 1.5) this.game.rpcTo(p.id, 'play', 'breathOut', { gain: 0.25 + p.breathRisk * 0.5, rate: 1.2 });
+          if (p.breathRisk >= 1) { this.knowsHides.add(p.hidden.id); this.grab(p); return; }
+        }
+      } else p.breathRisk = Math.max(0, p.breathRisk - dt * 0.4);
+    }
   }
 
   stuckCheck(dt, moved) {
@@ -764,31 +825,22 @@ export class Teacher {
   // ---- grab
   updateGrab(dt) {
     const g = this.game;
-    const p = g.player;
-    // pull the camera onto the teacher's face
-    const head = new THREE.Vector3(this.pos.x, this.pos.y + 2.1, this.pos.z);
-    const eye = p.eye();
-    const to = head.sub(eye);
-    const wantYaw = Math.atan2(-to.x, -to.z);
-    const wantPitch = Math.atan2(to.y, Math.hypot(to.x, to.z));
-    p.yaw += angleDiff(p.yaw, wantYaw) * Math.min(1, dt * 9);
-    p.pitch += (wantPitch - p.pitch) * Math.min(1, dt * 9);
+    const p = this.grabTarget;
+    if (!p) { this.beginSearch(T.searchTime); return; }
     this.turnTo(Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z), dt, 12);
     const d = dist2D(this.pos.x, this.pos.z, p.pos.x, p.pos.z);
     if (d > 0.8) this.moveToward(p.pos.x, p.pos.z, 3, dt, true);
-    if (this.t > 0.9 && !this.grabDone) {
+    // alone: the whole run restarts after a long, scary pull. With friends: the victim just goes down.
+    const finish = g.mp ? 2.6 : 3.6;
+    if (this.t > finish && !this.grabDone) {
       this.grabDone = true;
-      g.ui.fade(1, 250);
-    }
-    if (this.t > 1.3 && !this.caughtShown) {
-      this.caughtShown = true;
-      g.ui.caught(true);
-      g.audio.say('찾았다.', { vol: 0.9, pitch: 0.2, rate: 0.55, interrupt: true });
-    }
-    if (this.t > 3.6) {
-      this.grabDone = false;
-      this.caughtShown = false;
-      g.onCaught();
+      this.grabTarget = null;
+      if (g.mp) {
+        g.onVictimDown(p);
+        if (this.state === 'grab') this.beginSearch(10);
+      } else {
+        g.onCaught();
+      }
     }
   }
 
@@ -835,7 +887,7 @@ export class Teacher {
       if (this.seqT >= this.lineI * gap && this.lineI < step.lines.length) {
         const ln = step.lines[this.lineI++];
         this.say(ln, 1.1);
-        this.game.audio.play('chalk', { pos: [this.pos.x, this.pos.y + 1.2, this.pos.z], gain: 0.5, ...this.game.occlusion(this.pos.x, this.pos.y + 1, this.pos.z) });
+        this.game.rpc('play3d', 'chalk', [this.pos.x, this.pos.y + 1.2, this.pos.z], 0.5);
       }
       if (this.seqT >= step.lines.length * gap + 0.5) this.nextStep();
     } else if (step.wait !== undefined) {
@@ -871,7 +923,7 @@ export class Teacher {
     else if (this.waitAction === 'attend' && this.waitT > 0) { aR = -1.2 + Math.sin(this.t * 3) * 0.2; }
     m.armL.rotation.x = lerp(m.armL.rotation.x, aL, Math.min(1, dt * 10));
     m.armR.rotation.x = lerp(m.armR.rotation.x, aR, Math.min(1, dt * 10));
-    // head slowly follows the player; stays tilted
+    // head slowly follows the (local) player; stays tilted
     const p = this.game.player;
     const want = clamp(angleDiff(this.heading, Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z)), -1.1, 1.1);
     m.head.rotation.y = lerp(m.head.rotation.y, this.state === 'patrol' || this.state === 'search' ? want * 0.7 : want, Math.min(1, dt * 1.6));
@@ -881,7 +933,7 @@ export class Teacher {
   }
 
   // ------------------------------------------------------------ queries for the game
-  /** 0..1 how afraid the player should be right now. */
+  /** 0..1 how afraid the (local) player should be right now. */
   fear() {
     if (!this.active) return 0;
     const p = this.game.player;
@@ -896,12 +948,13 @@ export class Teacher {
     this.path = [];
     this.seq = null;
     this.pending = null;
-    this.knowsHide = null;
+    this.knowsHides.clear();
+    this.target = null;
+    this.grabTarget = null;
     this.awareness = 0;
     this.stunCount = 0;
     this.lure = null;
     this.waitT = 0;
     this.grabDone = false;
-    this.caughtShown = false;
   }
 }

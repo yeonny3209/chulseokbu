@@ -23,6 +23,27 @@ export function resetState() {
 }
 resetState();
 
+// ---- multiplayer: which parts of S are shared by the whole team ----
+// (battery, held item and read notes stay per player; the host owns the shared part)
+const SHARED_KEYS = ['flags', 'keys', 'collected', 'doorOpen', 'doorUnlocked', 'objective', 'stage', 'deaths'];
+const LOCAL_FLAGS = ['blackout', 'mirrorSeen'];
+
+export function getShared() {
+  const o = {};
+  for (const k of SHARED_KEYS) o[k] = S[k];
+  const f = { ...S.flags };
+  for (const k of LOCAL_FLAGS) delete f[k];
+  o.flags = f;
+  return o;
+}
+
+export function applyShared(sh) {
+  const keep = {};
+  for (const k of LOCAL_FLAGS) if (k in S.flags) keep[k] = S.flags[k];
+  for (const k of SHARED_KEYS) if (k in sh) S[k] = JSON.parse(JSON.stringify(sh[k]));
+  Object.assign(S.flags, keep);
+}
+
 export const settings = { ...DEFAULT_SETTINGS };
 const SK = 'chulseokbu.settings.v1';
 const GK = 'chulseokbu.save.v1';

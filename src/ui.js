@@ -14,6 +14,7 @@ const ITEM_LABELS = {
   phone: '낡은 휴대폰',
 };
 const HELD_LABELS = { chalk: '분필 상자', can: '빈 캔', slipper: '실내화' };
+const PLAYER_COLORS_HEX = ['d85a5a', '5aa0d8', 'd8c35a', '6fd88a', 'b07ad8', 'd8885a'];
 
 export class UI {
   constructor(game) {
@@ -44,7 +45,75 @@ export class UI {
   }
 
   hideAllScreens() {
-    for (const id of ['screen-start', 'screen-pause', 'screen-settings', 'screen-note', 'screen-dial', 'screen-inv', 'screen-caught', 'screen-end']) this.show(id, false);
+    for (const id of ['screen-start', 'screen-pause', 'screen-settings', 'screen-note', 'screen-dial', 'screen-inv', 'screen-caught', 'screen-end', 'screen-mp', 'screen-lobby', 'screen-enter']) this.show(id, false);
+  }
+
+  // -------------------------------------------------------------- multiplayer screens
+  showMP() {
+    const saved = (() => { try { return localStorage.getItem('chulseokbu.name') || ''; } catch (e) { return ''; } })();
+    const inp = this.$('mp-name');
+    if (!inp.value) inp.value = saved;
+    this.$('mp-status').textContent = '';
+    this.show('screen-mp', true);
+  }
+
+  mpName() {
+    let n = this.$('mp-name').value.trim().slice(0, 12);
+    if (!n) n = `플레이어${Math.floor(Math.random() * 90 + 10)}`;
+    this.$('mp-name').value = n;
+    try { localStorage.setItem('chulseokbu.name', n); } catch (e) { /* ignore */ }
+    return n;
+  }
+
+  mpCode() {
+    return this.$('mp-code').value.trim().toUpperCase();
+  }
+
+  mpStatus(text) {
+    this.$('mp-status').textContent = text;
+  }
+
+  renderLobby(list, isHost, code, kind) {
+    this.$('lobby-code').textContent = code;
+    this.$('lobby-count').textContent = `${list.length} / 6`;
+    const ul = this.$('lobby-list');
+    ul.innerHTML = '';
+    list.forEach((p, i) => {
+      const li = document.createElement('li');
+      const dot = document.createElement('i');
+      dot.style.background = `#${PLAYER_COLORS_HEX[p.idx % PLAYER_COLORS_HEX.length]}`;
+      li.append(dot, document.createTextNode(` ${p.name}${i === 0 ? '  (방장)' : ''}`));
+      ul.append(li);
+    });
+    this.$('btn-lobby-start').classList.toggle('hidden', !isHost);
+    this.$('lobby-wait').classList.toggle('hidden', isHost);
+    this.$('lobby-local').classList.toggle('hidden', kind !== 'local');
+  }
+
+  setPlayersHud(list) {
+    const el = this.$('players');
+    if (!list) { el.classList.add('hidden'); return; }
+    el.classList.remove('hidden');
+    el.innerHTML = '';
+    for (const p of list) {
+      const row = document.createElement('div');
+      row.className = `prow${p.downed ? ' down' : ''}${p.me ? ' me' : ''}`;
+      const dot = document.createElement('i');
+      dot.style.background = `#${p.color.toString(16).padStart(6, '0')}`;
+      row.append(dot, document.createTextNode(` ${p.name}${p.downed ? ' ↓' : ''}`));
+      el.append(row);
+    }
+  }
+
+  downOverlay(on) {
+    this.$('down-overlay').classList.toggle('hidden', !on);
+    if (!on) this.setReviveBar(0);
+  }
+
+  setReviveBar(v) {
+    const bar = this.$('revive');
+    bar.classList.toggle('on', v > 0.01);
+    this.$('revive-fill').style.width = `${Math.round(v * 100)}%`;
   }
 
   showHud(on) {
@@ -77,6 +146,7 @@ export class UI {
 
   setObjective(key) {
     S.objective = key;
+    this.shownObjective = key;
     const text = OBJECTIVES[key] || key;
     this.el.obj.textContent = `▸ ${text}`;
     this.el.obj.classList.add('on');

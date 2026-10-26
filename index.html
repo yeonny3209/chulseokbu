@@ -23,8 +23,11 @@
     <div id="held"></div>
     <div id="breath">[ Space ] 숨 참기</div>
     <div id="floorlabel"></div>
+    <div id="players" class="hidden"></div>
+    <div id="revive"><div id="revive-fill"></div></div>
     <div id="debug"></div>
   </div>
+  <div id="down-overlay" class="hidden"><div>쓰러졌다…<br /><small>동료가 구해 줄 때까지 기다려라</small></div></div>
 
   <div id="hide-overlay" class="hidden"></div>
   <div id="phone" class="hidden"><div class="screen"><b>2015.11.13</b><span>22:17</span><em>배터리 0%</em></div></div>
@@ -40,6 +43,7 @@
       <div class="btns">
         <button id="btn-new">새로 시작</button>
         <button id="btn-continue">이어하기</button>
+        <button id="btn-mp">함께하기 (최대 6명)</button>
         <button id="btn-settings">설정</button>
       </div>
       <p class="keys">WASD 이동 · Shift 달리기 · C 웅크리기 · 마우스 시점 · 좌클릭/F 손전등<br />우클릭/R(누르기) 집중광 · E 조사 · Q 던지기 · Space 숨 참기 · Tab 소지품 · Esc 일시정지</p>
@@ -98,6 +102,40 @@
         <ul id="inv-notes"></ul>
         <p class="close">Tab 으로 닫기</p>
       </div>
+    </div>
+  </div>
+
+  <div id="screen-mp" class="screen hidden">
+    <div class="box">
+      <h2>함께하기</h2>
+      <p class="warn">최대 6명이 같은 학교에 갇혀 함께 탈출한다.<br />서로 다른 집·다른 와이파이여도 방 코드만 있으면 접속된다.</p>
+      <div class="field"><label>이름</label><input id="mp-name" maxlength="12" placeholder="플레이어" /></div>
+      <div class="btns"><button id="btn-mp-host">방 만들기</button></div>
+      <div class="field"><label>방 코드</label><input id="mp-code" maxlength="6" placeholder="ABCDE" style="text-transform: uppercase" /></div>
+      <div class="btns"><button id="btn-mp-join">코드로 참가</button><button id="btn-mp-back">뒤로</button></div>
+      <p id="mp-status" class="warn"></p>
+    </div>
+  </div>
+
+  <div id="screen-lobby" class="screen hidden">
+    <div class="box">
+      <h2>대기실</h2>
+      <p class="sub" style="margin-bottom: 6px">방 코드</p>
+      <div id="lobby-code"></div>
+      <p class="warn">이 코드를 친구들에게 알려 주세요. <span id="lobby-count"></span></p>
+      <ul id="lobby-list"></ul>
+      <p id="lobby-wait" class="warn hidden">방장이 시작하기를 기다리는 중…</p>
+      <p id="lobby-local" class="warn hidden">(테스트 모드: 같은 브라우저의 다른 탭에서만 접속됩니다)</p>
+      <p class="warn" style="font-size: 12px">방장은 게임이 끝날 때까지 이 탭을 닫거나 다른 탭으로 숨기지 마세요.</p>
+      <div class="btns"><button id="btn-lobby-start">게임 시작</button><button id="btn-lobby-leave">나가기</button></div>
+    </div>
+  </div>
+
+  <div id="screen-enter" class="screen hidden">
+    <div class="box">
+      <h2>게임이 시작되었다</h2>
+      <p class="warn">헤드폰을 끼고, 준비되면 입장하세요.</p>
+      <div class="btns"><button id="btn-enter">입장</button></div>
     </div>
   </div>
 

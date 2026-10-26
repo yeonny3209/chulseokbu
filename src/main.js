@@ -1,11 +1,11 @@
-// 출석부 (Roll Call) — entry point. Wires renderer, world, player, teacher, audio, UI and the main loop.
+// 출석부 (Roll Call) — entry point. Wires renderer, world, player, teacher, audio, UI, networking and the main loop.
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { CFG } from './config.js';
-import { S, resetState, settings, loadSettings, hasSave, readSave, writeSave, clearSave, loadSaveInto } from './state.js';
+import { S, resetState, settings, loadSettings, hasSave, clearSave, loadSaveInto, applyShared } from './state.js';
 import { World } from './world.js';
 import { furnish } from './rooms.js';
 import { Nav } from './nav.js';
@@ -16,8 +16,10 @@ import { Player } from './player.js';
 import { Teacher } from './teacher.js';
 import { Events } from './events.js';
 import { Ending } from './ending.js';
+import { Net, MAX_PLAYERS } from './net/net.js';
+import { PLAYER_COLORS } from './net/remote.js';
 import { FLOOR_NAMES, START, fy } from './layout.js';
-import { clamp, damp } from './util.js';
+import { damp, dist2D } from './util.js';
 
 const FilmShader = {
   uniforms: { tDiffuse: { value: null }, time: { value: 0 }, vignette: { value: 1 }, grain: { value: 0.05 }, ca: { value: 0.0012 }, fear: { value: 0 } },
@@ -41,6 +43,37 @@ const FilmShader = {
 
 const ACTIVE_MODES = ['play', 'inv', 'note', 'dial', 'dead', 'ending'];
 
+// ---------------------------------------------------------------- RPC table
+// One-shot effects the host sends to everyone (or to one player). Same names on every machine.
+const RPC = {
+  toast: (g, t, ms) => g.ui.toast(t, ms),
+  hint: (g, t, ms) => g.ui.hint(t, ms),
+  subtitle: (g, t, ms, f) => g.ui.subtitle(t, ms, f),
+  objective: (g, k) => g.ui.setObjective(k),
+  pa: (g, text) => { g.audio.pa(text); g.ui.subtitle(`방송: "${text}"`, 3200); },
+  flash: (g, ms) => g.ui.flash(ms),
+  shake: (g, v) => { g.shake = Math.max(g.shake, v); },
+  fade: (g, o, ms) => g.ui.fade(o, ms),
+  play: (g, name, opts) => g.audio.play(name, opts || {}),
+  play3d: (g, name, pos, gain = 1, rate = 1) => g.audio.play(name, { pos, gain, rate, ...g.occlusion(pos[0], pos[1], pos[2]) }),
+  bell: (g, gain) => g.audio.bell(gain),
+  voice: (g, text, vol) => g.audio.say(text, { vol }),
+  say: (g, text, loud, pos) => g.teacher.sayLocal(text, loud, pos),
+  chaseAlert: (g) => g.chaseAlert(),
+  pickEffect: (g, id) => g.events.localPickupEffect(id),
+  readNote: (g, id) => g.events.readNote(id),
+  phoneUI: (g, on) => g.ui.phone(on),
+  blackout: (g, on) => { S.flags.blackout = on; },
+  ghostWindow: (g, on) => g.events.ghostWindow(on),
+  quietScare: (g) => g.events.quietScare(),
+  minBattery: (g, v) => { S.battery = Math.max(S.battery, v); },
+  grabbed: (g) => g.player.onGrabbed(),
+  setDowned: (g, on) => g.player.setDowned(on),
+  respawn: (g, x, y, z, yaw) => g.player.respawn(x, y, z, yaw),
+  wipeFade: (g) => { g.ui.fade(1, 1200); g.ui.toast('모두 쓰러졌다…', 2500); },
+  ending: (g) => g.startEnding(),
+};
+
 class Game {
   constructor() {
     loadSettings();
@@ -49,10 +82,14 @@ class Game {
     this.fps = 60;
     this.debugOn = false;
     this.noteId = null;
-    this.prevMode = 'play';
     this.settingsFrom = 'screen-start';
     this.difficultyBuilt = null;
+    this.wiping = false;
+    this.hudT = 0;
+    this.remoteSpots = [];
+    this.remoteSpotUsed = [];
 
+    this.net = new Net(this);
     this.initRenderer();
     this.ui = new UI(this);
     this.audio = new AudioSys();
@@ -70,7 +107,19 @@ class Game {
     this.refreshMenu();
     this.loop = this.loop.bind(this);
     requestAnimationFrame(this.loop);
+    // Browsers stop drawing hidden tabs. With friends the world must keep running (the host
+    // simulates it for everybody), so a timer keeps stepping the game while this tab is hidden.
+    setInterval(() => {
+      if (!document.hidden || !this.mp) return;
+      const now = performance.now();
+      const dt = Math.min((now - (this.lastT || now)) / 1000, 0.1);
+      this.lastT = now;
+      try { this.tick(dt); } catch (e) { console.error(e); }
+      this.input.endFrame();
+    }, 50);
   }
+
+  get mp() { return this.net.active; }
 
   // ------------------------------------------------------------------ setup
   initRenderer() {
@@ -98,6 +147,15 @@ class Game {
     this.scene.add(this.spot, this.spot.target);
     this.spot.visible = false;
 
+    // other players' flashlights: created once (the light count must never change at runtime)
+    for (let i = 0; i < MAX_PLAYERS - 1; i++) {
+      const s = new THREE.SpotLight(0xfff1d6, 0, 20, 0.45, 0.6, 2);
+      s.castShadow = false;
+      this.scene.add(s, s.target);
+      this.remoteSpots.push(s);
+      this.remoteSpotUsed.push(false);
+    }
+
     this.composer = new EffectComposer(renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.film = new ShaderPass(FilmShader);
@@ -105,7 +163,18 @@ class Game {
     this.composer.addPass(new OutputPass());
 
     window.addEventListener('resize', () => this.resize());
-    document.addEventListener('visibilitychange', () => { if (document.hidden && ['play', 'inv'].includes(this.mode)) this.pause(); });
+    document.addEventListener('visibilitychange', () => { if (document.hidden && !this.mp && ['play', 'inv'].includes(this.mode)) this.pause(); });
+  }
+
+  claimRemoteSpot() {
+    const i = this.remoteSpotUsed.indexOf(false);
+    const slot = i < 0 ? 0 : i;
+    this.remoteSpotUsed[slot] = true;
+    return slot;
+  }
+
+  releaseRemoteSpot(i) {
+    this.remoteSpotUsed[i] = false;
   }
 
   buildWorld() {
@@ -156,6 +225,7 @@ class Game {
       ui.show('mobile-warn', true);
       $('btn-new').disabled = true;
       $('btn-continue').disabled = true;
+      $('btn-mp').disabled = true;
     }
     $('btn-new').onclick = () => this.startNew();
     $('btn-continue').onclick = () => this.continueGame();
@@ -163,12 +233,24 @@ class Game {
     $('btn-pause-settings').onclick = () => this.openSettings('screen-pause');
     $('btn-settings-close').onclick = () => { ui.show('screen-settings', false); ui.show(this.settingsFrom, true); };
     $('btn-resume').onclick = () => this.resume();
-    $('btn-restart-cp').onclick = () => { ui.hideAllScreens(); this.audio.resume(); this.restartFromCheckpoint(false); };
+    $('btn-restart-cp').onclick = () => {
+      ui.hideAllScreens();
+      if (this.mp) { this.mode = 'play'; this.input.lock(); this.teamRestart(false); } else { this.audio.resume(); this.restartFromCheckpoint(false); }
+    };
     $('btn-menu').onclick = () => this.toMenu();
     $('btn-end-menu').onclick = () => location.reload();
     $('screen-note').onclick = () => this.closeOverlay();
     $('dial-try').onclick = () => ui.tryDial();
     $('dial-close').onclick = () => this.closeDial();
+
+    // multiplayer
+    $('btn-mp').onclick = () => { ui.hideAllScreens(); ui.showMP(); };
+    $('btn-mp-back').onclick = () => { ui.hideAllScreens(); ui.show('screen-start', true); };
+    $('btn-mp-host').onclick = () => this.mpHost();
+    $('btn-mp-join').onclick = () => this.mpJoin();
+    $('btn-lobby-start').onclick = () => this.startMPHost();
+    $('btn-lobby-leave').onclick = () => this.leaveRoom();
+    $('btn-enter').onclick = () => this.enterMPGame();
   }
 
   refreshMenu() {
@@ -183,13 +265,72 @@ class Game {
     this.ui.show('screen-settings', true);
   }
 
-  // ------------------------------------------------------------------ game flow
-  startNew() {
+  // ------------------------------------------------------------------ multiplayer: lobby
+  async mpHost() {
+    const ui = this.ui;
+    const name = ui.mpName();
+    ui.mpStatus('방을 만드는 중…');
     this.audio.init();
-    clearSave();
+    try {
+      this.net.onLobby = (list) => ui.renderLobby(list, true, this.net.code, this.net.kind);
+      const code = await this.net.host(name);
+      this.net.onLost = null;
+      ui.hideAllScreens();
+      ui.show('screen-lobby', true);
+      ui.renderLobby(this.net.lobby, true, code, this.net.kind);
+    } catch (e) {
+      console.warn(e);
+      ui.mpStatus('방을 만들 수 없다. 인터넷 연결을 확인해 주세요.');
+    }
+  }
+
+  async mpJoin() {
+    const ui = this.ui;
+    const code = ui.mpCode();
+    if (code.length < 4) { ui.mpStatus('방 코드를 입력해 주세요.'); return; }
+    ui.mpStatus('접속하는 중…');
+    this.audio.init();
+    try {
+      this.net.onLobby = (list) => ui.renderLobby(list, false, this.net.code, this.net.kind);
+      await this.net.join(code, ui.mpName());
+      this.net.onLost = () => this.onHostLost();
+      ui.hideAllScreens();
+      ui.show('screen-lobby', true);
+      ui.renderLobby(this.net.lobby, false, this.net.code, this.net.kind);
+    } catch (e) {
+      console.warn(e);
+      ui.mpStatus(`접속할 수 없다: ${(e && e.message) || '방을 찾을 수 없다.'}`);
+    }
+  }
+
+  leaveRoom() {
+    this.net.leave();
+    this.ui.hideAllScreens();
+    this.ui.show('screen-start', true);
+    this.refreshMenu();
+  }
+
+  onHostLost() {
+    if (this.mode === 'credits') return;
+    this.ui.hideAllScreens();
+    this.ui.showHud(false);
+    this.ui.downOverlay(false);
+    this.ui.hideOverlay(null);
+    this.player.respawn(START.x, fy(START.f), START.z, START.yaw);
+    this.teacher.reset();
+    this.teacher.activate(false);
+    this.mode = 'menu';
+    this.input.unlock();
+    this.ui.show('screen-start', true);
+    this.ui.toast('방장과 연결이 끊어졌다.', 5000);
+    this.refreshMenu();
+  }
+
+  /** Host pressed Start. */
+  startMPHost() {
+    this.audio.init();
     resetState();
     if (this.difficultyBuilt !== settings.difficulty) this.buildWorld();
-    this.events.resetTriggers();
     this.ui.hideAllScreens();
     this.ui.showHud(true);
     this.endingCleanup();
@@ -197,6 +338,56 @@ class Game {
     this.input.lock();
     this.player.flashOn = false;
     this.player.frozen = false;
+    this.player.downed = false;
+    this.player.grabbed = false;
+    this.player.stamina = CFG.player.staminaMax;
+    this.net.startGame(settings.difficulty);
+    this.events.begin();
+    this.ui.setBattery(S.battery, true);
+    this.audio.resume();
+  }
+
+  /** Client: the host started the game. Build the same world and wait for a click (pointer lock needs one). */
+  onMPStart(msg) {
+    settings.difficulty = msg.diff; // not saved: only for this session
+    if (this.difficultyBuilt !== msg.diff) this.buildWorld();
+    resetState();
+    this.events.resetTriggers();
+    this.net.lobby = msg.lobby;
+    this.net.createRemotes();
+    this.endingCleanup();
+    this.ui.hideAllScreens();
+    this.ui.show('screen-enter', true);
+  }
+
+  enterMPGame() {
+    this.ui.show('screen-enter', false);
+    this.ui.showHud(true);
+    this.mode = 'play';
+    this.input.lock();
+    this.player.flashOn = false;
+    this.player.stamina = CFG.player.staminaMax;
+    this.events.beginClient();
+    this.ui.setBattery(S.battery, true);
+    this.audio.resume();
+  }
+
+  // ------------------------------------------------------------------ game flow (solo)
+  startNew() {
+    this.net.leave();
+    this.audio.init();
+    clearSave();
+    resetState();
+    if (this.difficultyBuilt !== settings.difficulty) this.buildWorld();
+    this.ui.hideAllScreens();
+    this.ui.showHud(true);
+    this.endingCleanup();
+    this.mode = 'play';
+    this.input.lock();
+    this.player.flashOn = false;
+    this.player.frozen = false;
+    this.player.downed = false;
+    this.player.grabbed = false;
     this.player.stamina = CFG.player.staminaMax;
     this.events.begin();
     this.ui.setBattery(S.battery, false);
@@ -205,6 +396,7 @@ class Game {
   }
 
   continueGame() {
+    this.net.leave();
     this.audio.init();
     if (!loadSaveInto()) return this.startNew();
     if (this.difficultyBuilt !== settings.difficulty) this.buildWorld();
@@ -223,6 +415,8 @@ class Game {
     this.player.teleport(cp.x, cp.y, cp.z, cp.yaw);
     this.player.flashOn = false;
     this.player.frozen = false;
+    this.player.downed = false;
+    this.player.grabbed = false;
     this.player.stamina = CFG.player.staminaMax;
     this.player.exhausted = false;
     this.world.applyState();
@@ -233,13 +427,11 @@ class Game {
     this.ui.flashObjective();
   }
 
-  /** Caught (or "restart from checkpoint"): reload the last checkpoint, keep the counters. */
+  /** Solo: caught (or "restart from checkpoint"): reload the last checkpoint, keep the counters. */
   restartFromCheckpoint(died = true) {
     const deaths = S.deaths + (died ? 1 : 0);
     const time = S.time;
-    if (!loadSaveInto()) {
-      resetState();
-    }
+    if (!loadSaveInto()) resetState();
     S.deaths = deaths;
     S.time = time;
     this.ui.caught(false);
@@ -258,11 +450,11 @@ class Game {
   pause() {
     if (!['play', 'inv'].includes(this.mode)) return;
     this.ui.show('screen-inv', false);
-    this.prevMode = this.mode;
     this.mode = 'pause';
+    this.ui.$('btn-restart-cp').classList.toggle('hidden', this.net.isClient);
     this.ui.show('screen-pause', true);
     this.input.unlock();
-    this.audio.suspend();
+    if (!this.mp) this.audio.suspend(); // with friends the world keeps running
   }
 
   resume() {
@@ -274,13 +466,17 @@ class Game {
   }
 
   toMenu() {
+    if (this.mp) this.net.leave();
     this.ui.hideAllScreens();
     this.ui.showHud(false);
+    this.ui.downOverlay(false);
+    this.ui.hideOverlay(null);
     this.mode = 'menu';
     this.ui.show('screen-start', true);
     this.refreshMenu();
     this.audio.resume();
-    this.player.teleport(START.x, fy(START.f), START.z, START.yaw);
+    this.player.respawn(START.x, fy(START.f), START.z, START.yaw);
+    this.teacher.reset();
     this.teacher.activate(false);
   }
 
@@ -299,6 +495,170 @@ class Game {
       return;
     }
     if (!locked && ['play', 'inv'].includes(this.mode)) this.pause();
+  }
+
+  // ------------------------------------------------------------------ multiplayer: players & rules
+  allPlayers() {
+    const list = [this.player];
+    if (this.mp) for (const r of this.net.remotes.values()) list.push(r);
+    return list;
+  }
+
+  /** Run an effect here and (if we are the host) on every other player. */
+  rpc(name, ...args) {
+    const f = RPC[name];
+    if (f) f(this, ...args);
+    if (this.net.role === 'host') this.net.broadcast({ t: 'rpc', n: name, a: args });
+  }
+
+  /** Run an effect only for one player. */
+  rpcTo(id, name, ...args) {
+    if (id === this.net.myId) {
+      const f = RPC[name];
+      if (f) f(this, ...args);
+    } else if (this.net.role === 'host') {
+      this.net.sendTo(id, { t: 'rpc', n: name, a: args });
+    }
+  }
+
+  runRPC(name, args) {
+    const f = RPC[name];
+    if (f) f(this, ...(args || []));
+  }
+
+  /** A sound the local player causes that everyone should hear. */
+  sfx3d(name, pos, gain = 1) {
+    if (this.net.role === 'host') {
+      this.rpc('play3d', name, pos, gain);
+    } else {
+      RPC.play3d(this, name, pos, gain);
+      if (this.net.role === 'client') this.net.sendHost({ t: 'sfx', n: name, pos, g: gain });
+    }
+  }
+
+  noise(x, y, z, radius, kind = 'player') {
+    if (this.net.isClient) this.net.sendHost({ t: 'noise', x, y, z, r: radius, k: kind });
+    else if (this.teacher) this.teacher.hear(x, y, z, radius, kind);
+  }
+
+  chaseAlert() {
+    this.audio.play('spot', { gain: 0.9 });
+    this.audio.say('17번!', { vol: 1, pitch: 0.2, rate: 0.9, interrupt: true });
+    this.ui.subtitle('"17번!"', 1800);
+    this.shake = Math.max(this.shake, 0.6);
+  }
+
+  onPlayerHide(p, h) {
+    if (this.net.isClient) this.net.sendHost({ t: 'hide', id: h.id, on: 1, x: p.pos.x, y: p.pos.y, z: p.pos.z });
+    else this.teacher.onPlayerHide(h, p);
+  }
+
+  onPlayerUnhide(p, h) {
+    if (this.net.isClient) this.net.sendHost({ t: 'hide', id: h.id, on: 0 });
+    else this.teacher.onPlayerUnhide(h);
+  }
+
+  /** Host: the teacher caught `p`. */
+  onGrabbed(p) {
+    if (p === this.player) this.player.onGrabbed();
+    else this.rpcTo(p.id, 'grabbed');
+  }
+
+  /** Host (multiplayer): `p` is knocked down. If everybody is down the team restarts. */
+  onVictimDown(p) {
+    p.downed = true;
+    p.rp = 0;
+    if (p === this.player) this.player.setDowned(true);
+    else this.rpcTo(p.id, 'setDowned', true);
+    this.checkWipe();
+  }
+
+  checkWipe() {
+    if (this.wiping) return;
+    const all = this.allPlayers();
+    if (all.length && all.every((q) => q.downed)) this.teamWipe();
+  }
+
+  teamWipe() {
+    this.wiping = true;
+    this.rpc('wipeFade');
+    this.events.after(2.4, () => { this.wiping = false; this.teamRestart(true); });
+  }
+
+  /** Host: everybody goes back to the last checkpoint. */
+  teamRestart(died) {
+    const deaths = S.deaths + (died ? 1 : 0);
+    if (this.events.cpSnap) {
+      applyShared(JSON.parse(this.events.cpSnap));
+    } else {
+      // no checkpoint yet: back to the very start
+      const keepCp = S.cp;
+      resetState();
+      S.keys.flashlight = true;
+      S.collected.flashlight = true;
+      S.cp = keepCp;
+    }
+    S.deaths = deaths;
+    const cp = S.cp || { x: START.x, y: fy(START.f), z: START.z, yaw: START.yaw };
+    this.world.applyState();
+    this.events.rearmTriggers();
+    const list = this.allPlayers();
+    const taken = [];
+    list.forEach((p, i) => {
+      // first free spot around the checkpoint (not inside a wall, not on top of a friend)
+      let x = cp.x, z = cp.z;
+      if (i > 0) {
+        search:
+        for (const r of [0.8, 0.55, 1.1]) {
+          for (let k = 0; k < 8; k++) {
+            const a = ((i + k) / 8) * Math.PI * 2;
+            const cx = cp.x + Math.cos(a) * r, cz = cp.z + Math.sin(a) * r;
+            if (this.world.hitCircle(cx, cz, cp.y, 1.7, CFG.player.radius)) continue;
+            if (taken.some((t) => Math.hypot(t[0] - cx, t[1] - cz) < 0.6)) continue;
+            x = cx; z = cz;
+            break search;
+          }
+        }
+      }
+      taken.push([x, z]);
+      if (p !== this.player) { p.downed = false; p.invuln = 3; p.rp = 0; p.hideTime = 0; }
+      this.rpcTo(p.id, 'respawn', x, cp.y, z, cp.yaw);
+    });
+    this.net.lastShared = '';
+    this.events.onRestore(true);
+    this.ui.setHeld(S.held);
+  }
+
+  onPlayerLeft(info) {
+    this.ui.toast(`${info.name}님이 나갔다.`, 3500);
+    if (this.net.role === 'host') this.checkWipe();
+  }
+
+  /** Host: help downed players up when a friend holds E next to them. */
+  updateRevive(dt) {
+    const all = this.allPlayers();
+    for (const d of all) {
+      if (!d.downed || d.hidden) continue;
+      let helper = null;
+      for (const h of all) {
+        if (h === d || h.downed || h.grabbed) continue;
+        if (h.reviving === d.id && dist2D(h.pos.x, h.pos.z, d.pos.x, d.pos.z) < 2.6 && Math.abs(h.pos.y - d.pos.y) < 1.5) { helper = h; break; }
+      }
+      d.rp = helper ? Math.min(1, (d.rp || 0) + dt / 3) : Math.max(0, (d.rp || 0) - dt * 0.5);
+      if (d.rp >= 1) {
+        d.rp = 0;
+        d.invuln = 4;
+        if (d === this.player) this.player.setDowned(false);
+        else { d.downed = false; this.rpcTo(d.id, 'setDowned', false); }
+        this.rpcTo(d.id, 'toast', '동료가 일으켜 주었다.');
+      }
+    }
+  }
+
+  /** Client: the host sent new shared progress. */
+  onSharedChanged() {
+    if (this.ui.shownObjective !== S.objective) this.ui.setObjective(S.objective);
+    this.ui.setHeld(S.held);
   }
 
   // ------------------------------------------------------------------ overlays
@@ -352,13 +712,9 @@ class Game {
   }
 
   startEnding() {
+    if (this.mode === 'ending' || this.mode === 'credits') return;
     this.ui.setPrompt(null);
     this.ending.start();
-  }
-
-  // ------------------------------------------------------------------ shared helpers
-  noise(x, y, z, radius, kind = 'player') {
-    if (this.teacher) this.teacher.hear(x, y, z, radius, kind);
   }
 
   /** Muffling options for a sound at (x,y,z) as heard by the player. */
@@ -398,16 +754,19 @@ class Game {
     if (this.mode === 'dial' && inp.hit('Enter')) this.ui.tryDial();
     if ((this.mode === 'play' || this.mode === 'inv') && inp.hit('Tab')) this.toggleInventory();
 
-    if (!ACTIVE_MODES.includes(this.mode)) return;
+    const live = ACTIVE_MODES.includes(this.mode) || (this.mp && this.mode === 'pause');
+    if (!live) return;
 
-    this.player.frozen = ['note', 'dial', 'dead', 'ending'].includes(this.mode) || this.teacher.state === 'grab';
-    if (this.mode === 'play' || this.mode === 'inv') S.time += dt;
-
-    this.player.update(dt);
-    this.teacher.update(dt);
     const p = this.player;
+    p.frozen = ['note', 'dial', 'dead', 'ending', 'pause'].includes(this.mode) || p.grabbed || p.downed;
+    if (this.mode === 'play' || this.mode === 'inv' || (this.mp && this.mode === 'pause')) S.time += dt;
+
+    p.update(dt);
+    this.net.update(dt);
+    this.teacher.update(dt);
     this.world.update(dt, p.pos.x, p.pos.z, p.floor);
     this.events.update(dt);
+    if (this.mp && !this.net.isClient) this.updateRevive(dt);
     if (this.mode === 'ending') this.ending.update(dt);
 
     // ambience reacting to the teacher
@@ -416,20 +775,35 @@ class Game {
     const fwd = p.forward();
     this.audio.setListener(p.pos.x, p.pos.y + p.camY, p.pos.z, fwd.x, fwd.z);
     if (this.mode !== 'ending') this.audio.heart(dt, this.fear);
-    if (this.teacher.state !== 'chase' && this.teacher.state !== 'grab' && this.audio.chaseLevel > 0) this.audio.setChase(0);
+    const chasing = this.mode !== 'ending' && this.teacher.active && this.teacher.state === 'chase';
+    if (chasing !== this._chasing) { this._chasing = chasing; this.audio.setChase(chasing ? 1 : 0); }
     this.shake = Math.max(0, this.shake - dt * 1.6);
-    if (this.teacher.state === 'chase') this.shake = Math.max(this.shake, 0.25);
+    if (chasing) this.shake = Math.max(this.shake, 0.25);
 
     this.ui.floorLabel(this.mode === 'ending' ? '' : FLOOR_NAMES[p.floor]);
+    this.hudT -= dt;
+    if (this.hudT <= 0) { this.hudT = 0.4; this.updatePlayersHud(); }
     if (this.debugOn) {
       const t = this.teacher;
       this.ui.debug(
-        `fps ${this.fps.toFixed(0)}  mode ${this.mode}\npos ${p.pos.x.toFixed(1)}, ${p.pos.y.toFixed(2)}, ${p.pos.z.toFixed(1)}  floor ${p.floor}\n` +
+        `fps ${this.fps.toFixed(0)}  mode ${this.mode}  net ${this.net.role}${this.mp ? ` ${this.net.code} players ${this.allPlayers().length}` : ''}\n` +
+        `pos ${p.pos.x.toFixed(1)}, ${p.pos.y.toFixed(2)}, ${p.pos.z.toFixed(1)}  floor ${p.floor}\n` +
         `teacher ${t.active ? t.state : 'off'} @ ${t.pos.x.toFixed(1)}, ${t.pos.y.toFixed(1)}, ${t.pos.z.toFixed(1)}  aware ${t.awareness.toFixed(2)}\n` +
         `fear ${this.fear.toFixed(2)}  battery ${S.battery.toFixed(0)}  stamina ${p.stamina.toFixed(0)}\n` +
-        `cp ${S.cp ? S.cp.id : '-'}  stage obj ${S.objective}  deaths ${S.deaths}`,
+        `cp ${S.cp ? S.cp.id : '-'}  obj ${S.objective}  deaths ${S.deaths}`,
       );
     }
+  }
+
+  updatePlayersHud() {
+    if (!this.mp) { this.ui.setPlayersHud(null); return; }
+    const list = this.allPlayers().map((q) => ({
+      name: q === this.player ? this.net.myName : q.name,
+      color: PLAYER_COLORS[(q === this.player ? this.net.myIdx : q.idx) % PLAYER_COLORS.length],
+      downed: q.downed,
+      me: q === this.player,
+    }));
+    this.ui.setPlayersHud(list);
   }
 
   render(dt) {

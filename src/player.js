@@ -96,8 +96,17 @@ export class Player {
     this.flickerT = 0;
     this.aimDir = new THREE.Vector3(0, 0, -1);
     this.spotDir = new THREE.Vector3(0, 0, -1);
+    // multiplayer
+    this.downed = false; // knocked down by the teacher, waiting to be revived
+    this.grabbed = false; // being pulled by the teacher right now
+    this.grabT = 0;
+    this.invuln = 0;
+    this.reviving = 0; // id of the downed friend this player is helping up
+    this.rp = 0; // revive progress while this player is down (0..1)
+    this.hideTime = 0;
   }
 
+  get id() { return this.game.net.myId; }
   get floor() { return this.game.world.floorOf(this.pos.y + 0.5); }
   get height() { return this.crouch ? 1.15 : 1.7; }
 
@@ -136,7 +145,12 @@ export class Player {
     }
     this.pitch = clamp(this.pitch, -1.45, 1.45);
 
-    if (this.hidden) {
+    if (this.invuln > 0) this.invuln -= dt;
+    if (this.grabbed) {
+      this.updateGrabbed(dt);
+    } else if (this.downed) {
+      this.updateDowned(dt);
+    } else if (this.hidden) {
       this.updateHidden(dt);
     } else if (!this.frozen) {
       this.updateMove(dt);
@@ -252,11 +266,144 @@ export class Player {
         best = it;
       }
     }
+    // a downed friend nearby: hold E to help them up
+    this.reviving = 0;
+    const friend = g.mp ? this.findDownedFriend() : null;
+    if (friend) {
+      this.reviving = g.input.down('KeyE') ? friend.id : 0;
+      this.target = null;
+      g.ui.setPrompt(friend.rp > 0.02 ? `${friend.name} 일으키는 중… ${Math.round(friend.rp * 100)}%` : `${friend.name} 구하기 — E 길게 누르기`);
+      return;
+    }
     this.target = best;
     g.ui.setPrompt(best ? best.prompt() : null);
     if (best && g.input.hit('KeyE')) {
       best.use();
     }
+  }
+
+  findDownedFriend() {
+    let best = null, bd = 2.3;
+    for (const r of this.game.net.remotes.values()) {
+      if (!r.downed || r.hiddenId) continue;
+      const d = Math.hypot(r.pos.x - this.pos.x, r.pos.z - this.pos.z);
+      if (d < bd && Math.abs(r.pos.y - this.pos.y) < 1.5) { bd = d; best = r; }
+    }
+    return best;
+  }
+
+  // ------------------------------------------------------------------ being caught / down / revived
+  /** The teacher has hold of us: pull the camera onto his face. */
+  onGrabbed() {
+    const g = this.game;
+    this.grabbed = true;
+    this.grabT = 0;
+    this.frozen = true;
+    this.flashOn = false;
+    this.focus = false;
+    this.grabTextShown = false;
+    this.reviving = 0;
+    if (this.hidden) {
+      const h = this.hidden;
+      this.hidden = null;
+      this.hideTime = 0;
+      this.pos.set(h.exit.x, h.f * FLOOR_H, h.exit.z);
+      g.ui.hideOverlay(null);
+      g.ui.breath(false);
+    }
+    this.camY = CFG.player.eye;
+    g.audio.setChase(0);
+    g.audio.play('stingerSoft', { gain: 0.9 });
+    g.ui.setPrompt(null);
+  }
+
+  updateGrabbed(dt) {
+    const g = this.game;
+    const t = g.teacher;
+    const head = new THREE.Vector3(t.pos.x, t.pos.y + 2.1, t.pos.z);
+    const to = head.sub(this.eye());
+    const wantYaw = Math.atan2(-to.x, -to.z);
+    const wantPitch = Math.atan2(to.y, Math.hypot(to.x, to.z));
+    this.yaw += angleDiff(this.yaw, wantYaw) * Math.min(1, dt * 9);
+    this.pitch += (wantPitch - this.pitch) * Math.min(1, dt * 9);
+    this.grabT += dt;
+    if (!g.mp && this.grabT > 0.9 && !this.grabFaded) { this.grabFaded = true; g.ui.fade(1, 250); }
+    if (this.grabT > 1.3 && !this.grabTextShown) {
+      this.grabTextShown = true;
+      g.ui.caught(true);
+      g.audio.say('찾았다.', { vol: 0.9, pitch: 0.2, rate: 0.55, interrupt: true });
+    }
+  }
+
+  /** Multiplayer: knocked out. Friends can pull us up again. */
+  setDowned(on) {
+    const g = this.game;
+    if (on === this.downed && !this.grabbed) return;
+    this.downed = on;
+    this.grabbed = false;
+    this.grabFaded = false;
+    this.frozen = on;
+    g.ui.caught(false);
+    g.ui.downOverlay(on);
+    if (on) {
+      this.flashOn = false;
+      this.focus = false;
+      this.crouch = false;
+      this.running = false;
+      this.moving = false;
+      if (this.hidden) { this.hidden = null; g.ui.hideOverlay(null); }
+      g.ui.setPrompt(null);
+    } else {
+      this.camY = CFG.player.eye;
+      this.rp = 0;
+    }
+  }
+
+  updateDowned(dt) {
+    this.camY = damp(this.camY, 0.35, 4, dt);
+    this.pitch = clamp(this.pitch, -0.6, 0.9);
+    this.moving = false;
+    this.running = false;
+    this.game.ui.setPrompt(null);
+    this.game.ui.setStamina(100, false);
+    this.game.ui.setNoise(0);
+    this.game.ui.setReviveBar(this.rp);
+  }
+
+  /** Back on our feet at a respawn point (team revive or checkpoint restart). */
+  respawn(x, y, z, yaw) {
+    const g = this.game;
+    this.teleport(x, y, z, yaw);
+    this.downed = false;
+    this.grabbed = false;
+    this.grabFaded = false;
+    this.frozen = false;
+    this.rp = 0;
+    this.reviving = 0;
+    this.invuln = 3;
+    this.stamina = CFG.player.staminaMax;
+    this.exhausted = false;
+    this.flashOn = false;
+    S.battery = Math.max(S.battery, 50);
+    g.ui.caught(false);
+    g.ui.downOverlay(false);
+    g.ui.fade(0, 1400);
+    g.ui.setBattery(S.battery, !!S.keys.flashlight);
+  }
+
+  // ------------------------------------------------------------------ network
+  netState(id) {
+    return {
+      i: id, x: this.pos.x, y: this.pos.y, z: this.pos.z, a: this.yaw, b: this.pitch, cy: this.camY,
+      h: this.hidden ? this.hidden.id : 0, f: this.flashOn ? 1 : 0, o: this.focus ? 1 : 0, c: this.crouch ? 1 : 0,
+      r: this.running ? 1 : 0, hb: this.holding ? 1 : 0, d: this.downed ? 1 : 0, rp: this.rp, rv: this.reviving,
+    };
+  }
+
+  /** What the host says about us (authoritative: down / revive progress). */
+  applyNetSelf(s) {
+    this.rp = s.rp || 0;
+    if (!!s.d !== this.downed && !this.grabbed) this.setDowned(!!s.d);
   }
 
   // ------------------------------------------------------------------ hiding
@@ -268,6 +415,7 @@ export class Player {
     this.holding = false;
     this.holdT = 0;
     this.breathRisk = 0;
+    this.reviving = 0;
     this.flashOn = false;
     this.crouch = false;
     this.pos.set(h.cam.x, h.f * FLOOR_H, h.cam.z);
@@ -278,7 +426,7 @@ export class Player {
     g.ui.setPrompt(null);
     g.audio.play('doorClose', { gain: 0.25, rate: 1.4 });
     g.noise(this.pos.x, this.pos.y, this.pos.z, CFG.noise.hide);
-    g.teacher.onPlayerHide(h);
+    g.onPlayerHide(this, h);
   }
 
   exitHide() {
@@ -295,7 +443,7 @@ export class Player {
     this.pos.set(ok ? h.exit.x : h.x, fy, ok ? h.exit.z : h.z);
     this.camY = P.eye;
     g.audio.play('creak', { gain: 0.35, rate: 1.5 });
-    g.teacher.onPlayerUnhide();
+    g.onPlayerUnhide(this, h);
   }
 
   updateHidden(dt) {
@@ -346,7 +494,7 @@ export class Player {
   onLand(pr) {
     const g = this.game;
     const p = pr.pos;
-    g.audio.play(pr.type === 'can' ? 'can' : 'thud', { pos: [p.x, p.y, p.z], gain: pr.type === 'can' ? 1.0 : 0.8 });
+    g.sfx3d(pr.type === 'can' ? 'can' : 'thud', [p.x, p.y, p.z], pr.type === 'can' ? 1.0 : 0.8);
     g.noise(p.x, p.y, p.z, CFG.noise.throw, 'lure');
   }
 

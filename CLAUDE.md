@@ -24,6 +24,15 @@
 | `state.js` | 저장되는 진행 상태 `S`, 설정, localStorage |
 | `main.js` | 렌더러·후처리·메인 루프·메뉴 흐름 |
 
+## 멀티플레이 (최대 6명) 구조
+- `src/net/transport.js` 연결(PeerJS WebRTC / 테스트용 BroadcastChannel `?net=local`), `net/net.js` 방·메시지·동기화, `net/remote.js` 다른 플레이어(아바타·손전등).
+- **방장이 이야기 전체를 계산한다**(선생님 AI, 퍼즐, 점프스케어, 체크포인트). 참가자는 자기 캐릭터만 움직이고 위치를 15Hz로 방장에게 보낸다. 방장은 15Hz로 `snap`(플레이어들+선생님)과 `shared`(진행 상태)를 뿌린다.
+- 공유 상태는 `state.js` 의 `SHARED_KEYS` 만 (flags, keys, collected, doorOpen, doorUnlocked, objective, stage, deaths). 배터리·든 물건·읽은 쪽지는 각자 것.
+- 공유 상태를 바꾸는 행동은 반드시 `events.act('이름', 데이터)` → 방장의 `hostAct`. 직접 `S.flags.x = ...` 하지 말 것(참가자 화면에서는 무시됨).
+- 모두가 보고 들어야 하는 효과는 `game.rpc('이름', ...)`, 한 사람에게만은 `game.rpcTo(id, '이름', ...)`. 이름은 `main.js` 의 `RPC` 표에 등록.
+- 선생님은 `game.allPlayers()` 의 모든 플레이어를 본다. 새 플레이어 속성이 필요하면 `Player`와 `RemotePlayer` 양쪽에 같은 이름으로 만든다(`pos, hidden, flashOn, focus, holding, downed, invuln, eye(), forward()`).
+- 혼자 하기(solo)는 같은 코드가 `role === 'solo'` 로 돈다. 혼자 하기가 깨지지 않았는지 항상 같이 확인.
+
 ## 작업 규칙
 - 숫자(속도, 반경, 시간)는 코드에 직접 쓰지 말고 `config.js` 에 둔다.
 - 글(대사, 쪽지)은 `story.js` 에 둔다.
@@ -41,3 +50,4 @@
 - Blender 모델은 아직 쓰지 않음(학교를 코드로 생성). Blender 로 만든 `.glb` 를 불러오려면 `world.js` 의 `build()` 대신 GLTFLoader 로 교체하고, 빈 오브젝트 이름 규칙(`spawn_`, `hide_`, `patrol_`)을 읽도록 확장.
 - 선생님 목소리는 TTS 임시. 실제 녹음 파일은 `public/sounds/` 에 넣고 `audio.js` 에서 불러오게 확장.
 - 모바일 미지원(PC 전용).
+- 멀티플레이: 중간 입장·재접속 미지원, 방장이 나가면 게임 종료, 음성 채팅 없음. 서로 다른 네트워크 실제 환경(TURN 중계 포함)은 사람이 직접 확인해야 함.

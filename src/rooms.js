@@ -322,7 +322,7 @@ export function furnish(world) {
     const cur = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.9), new THREE.MeshStandardMaterial({ color: 0x66808a, roughness: 1, side: THREE.DoubleSide }));
     cur.position.set(c.X(4.1), y + 1.25, c.Z(3.6));
     world.group.add(cur);
-    c.curtain = cur;
+    world.curtainMesh = cur;
     world.addInteract({
       id: 'curtain', f: c.f, x: c.X(4.1), y: y + 1.2, z: c.Z(3.0), range: 2.2,
       prompt: () => '커튼 걷기 [E]',
