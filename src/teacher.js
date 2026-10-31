@@ -129,6 +129,15 @@ export class Teacher {
   get nav() { return this.game.nav; }
   get eyePos() { return new THREE.Vector3(this.pos.x, this.pos.y + 2.1, this.pos.z); }
   get diff() { return CFG.difficulty[settings.difficulty]; }
+
+  /**
+   * Mercy for people who keep dying at the same checkpoint: from the 2nd death on he sees a bit
+   * less far, notices you a bit later and runs a bit slower (never below a floor).
+   */
+  get assist() {
+    const n = Math.max(0, (this.game.cpDeaths || 0) - 1);
+    return { view: Math.max(0.5, 1 - 0.1 * n), speed: Math.min(0.6, 0.1 * n), detect: 1 + 0.25 * n };
+  }
   get isClient() { return this.game.net.role === 'client'; }
   get players() { return this.game.allPlayers(); }
 
@@ -273,8 +282,9 @@ export class Teacher {
     if (!this.active || this.grace > 0 || this.noDetect || p.downed || (p.invuln || 0) > 0) return false;
     if (p.hidden && !this.knowsHides.has(p.hidden.id)) return false;
     const d = dist2D(this.pos.x, this.pos.z, p.pos.x, p.pos.z);
-    const maxD = (p.flashOn ? T.viewDistLight : T.viewDist) * this.diff.view;
-    const sense = T.senseRadius * this.diff.view;
+    const vis = this.diff.view * this.assist.view;
+    const maxD = (p.flashOn ? T.viewDistLight : T.viewDist) * vis;
+    const sense = T.senseRadius * vis;
     if (d > maxD) return false;
     const ang = Math.abs(angleDiff(this.heading, Math.atan2(p.pos.x - this.pos.x, p.pos.z - this.pos.z)));
     const inCone = ang < (T.viewAngleDeg * Math.PI) / 360;
@@ -531,8 +541,9 @@ export class Teacher {
       if (d < bd) { bd = d; best = p; }
     }
     if (best) {
-      this.awareness += dt * (bd < 6 ? 2.2 : 1);
-      if (this.awareness >= T.detectTime) this.startChase(true, best);
+      // he notices you faster up close, slower from far away
+      this.awareness += dt * (bd < 4 ? 2.2 : bd < 8 ? 1 : 0.6);
+      if (this.awareness >= this.diff.detect * this.assist.detect) this.startChase(true, best);
     } else {
       this.awareness = Math.max(0, this.awareness - dt * 0.8);
     }
@@ -689,7 +700,7 @@ export class Teacher {
   // ---- chase
   updateChase(dt) {
     const g = this.game;
-    const speed = this.diff.chase;
+    const speed = Math.max(2.6, this.diff.chase - this.assist.speed);
     let p = this.target;
     // lose a target that went down or is no longer a valid player
     if (!p || p.downed || !this.players.includes(p)) {

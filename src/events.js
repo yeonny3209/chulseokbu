@@ -19,6 +19,7 @@ export class Events {
     this.triggers = [];
     this.bcT = rand(60, 100);
     this.cpSnap = null; // multiplayer: shared state at the last checkpoint
+    this.autoT = CFG.autoCheckpointEvery;
     this.safeActor = null;
     this.ghost = createTeacherModel('ghoul');
     this.ghost.root.visible = false;
@@ -174,6 +175,12 @@ export class Events {
     this.updateGhost(dt);
     if (g.net.isClient) return; // the host runs the story
     this.checkTriggers();
+    // quiet moments save progress by themselves, so a death never costs more than a minute or two
+    this.autoT -= dt;
+    if (this.autoT <= 0) {
+      this.autoT = 12; // try again soon if it was not a safe moment
+      if (this.canAutoCheckpoint()) this.checkpoint('cp_auto', true);
+    }
     // school PA now and then
     if (!S.flags.finalStarted && g.mode === 'play') {
       this.bcT -= dt;
@@ -187,10 +194,29 @@ export class Events {
   }
 
   // ------------------------------------------------------------------ checkpoints
+  /** Safe moment: story under way, nobody hiding/hurt, no scare running and the teacher is not close. */
+  canAutoCheckpoint() {
+    const g = this.game;
+    if (g.mode !== 'play' || !S.flags.firstSight || S.flags.finalStarted || S.flags.ended) return false;
+    if (g.scares.busy || g.wiping) return false;
+    const players = g.allPlayers();
+    if (players.some((p) => p.hidden || p.downed || p.grabbed)) return false;
+    const t = g.teacher;
+    if (t.active) {
+      if (!['patrol', 'idle'].includes(t.state)) return false;
+      for (const p of players) {
+        if (Math.abs(p.pos.y - t.pos.y) < 3 && dist2D(p.pos.x, p.pos.z, t.pos.x, t.pos.z) < 16) return false;
+      }
+    }
+    return true;
+  }
+
   /** Host: remember progress. `at` = the player whose position becomes the restart point. */
   checkpoint(id, silent = false, at = null) {
     const g = this.game;
     const p = at || g.player;
+    g.cpDeaths = 0; // fresh progress: the teacher is back to normal strength
+    this.autoT = CFG.autoCheckpointEvery;
     S.cp = { id, x: p.pos.x, y: p.pos.y, z: p.pos.z, yaw: p.yaw || 0 };
     if (g.mp) this.cpSnap = JSON.stringify(getShared());
     else writeSave();

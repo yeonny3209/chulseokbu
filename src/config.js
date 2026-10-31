@@ -20,9 +20,9 @@ export const CFG = {
     crouch: 1.3,
     stepUp: 0.6,
     staminaMax: 100,
-    staminaDrain: 12,
-    staminaRegen: 20,
-    staminaResume: 25,
+    staminaDrain: 8, // ~12 s of running (was 8 s)
+    staminaRegen: 30,
+    staminaResume: 20,
     interactRange: 2.3,
   },
 
@@ -30,9 +30,9 @@ export const CFG = {
   noise: {
     crouch: 0,
     walk: 2,
-    run: 12,
-    door: 6,
-    doorRusty: 15,
+    run: 9,
+    door: 4,
+    doorRusty: 10,
     drop: 10,
     throw: 14,
     hide: 4,
@@ -43,11 +43,11 @@ export const CFG = {
 
   // ---- flashlight ----
   flashlight: {
-    drain: 0.5, // battery per second
-    focusDrain: 8,
-    focusTime: 1.5, // seconds of beam on face to stun
-    flickerBelow: 20,
-    batteryRestore: 40,
+    drain: 0.3, // battery per second (a full battery lasts ~5.5 minutes)
+    focusDrain: 6,
+    focusTime: 1.0, // seconds of beam on face to stun
+    flickerBelow: 15,
+    batteryRestore: 50,
     startBattery: 100,
     intensity: 220,
     focusIntensity: 520,
@@ -64,22 +64,25 @@ export const CFG = {
     search: 1.6,
     chase: 3.6,
     viewAngleDeg: 70,
-    viewDist: 15,
-    viewDistLight: 25,
-    senseRadius: 2.5,
-    detectTime: 0.5,
-    loseTime: 3.0,
-    searchTime: 15,
-    catchDist: 1.0,
-    stunTimes: [3, 2, 0],
-    hideProtect: 3, // seconds after hiding in which he can't "find" you
-    respawnGrace: 10,
+    viewDist: 12,
+    viewDistLight: 18,
+    senseRadius: 2.0,
+    detectTime: 0.9, // overridden per difficulty (difficulty.detect)
+    loseTime: 2.0,
+    searchTime: 12,
+    catchDist: 0.85,
+    stunTimes: [4, 3, 2],
+    hideProtect: 5, // seconds after hiding in which he can't "find" you
+    respawnGrace: 15,
   },
 
+  // view: sight distance multiplier · chase: his running speed (you run at 4.2, walk 2.5)
+  // detect: seconds he must keep you in view before he starts the chase
+  // openChance: chance he opens the hiding place you are in · breath: the hold-your-breath mechanic
   difficulty: {
-    easy: { view: 0.7, chase: 3.2, openChance: 0.0, breath: false, label: '쉬움' },
-    normal: { view: 1.0, chase: 3.6, openChance: 0.2, breath: true, label: '보통' },
-    hard: { view: 1.2, chase: 4.0, openChance: 0.4, breath: true, label: '어려움' },
+    easy: { view: 0.6, chase: 2.9, detect: 1.5, openChance: 0.0, breath: false, label: '쉬움' },
+    normal: { view: 0.85, chase: 3.3, detect: 1.0, openChance: 0.1, breath: false, label: '보통' },
+    hard: { view: 1.1, chase: 3.8, detect: 0.6, openChance: 0.35, breath: true, label: '어려움' },
   },
 
   // ---- graphics presets ----
@@ -90,8 +93,9 @@ export const CFG = {
   },
 
   // ---- misc ----
-  fogDensity: 0.045,
-  ambient: 0.95,
+  fogDensity: 0.04,
+  ambient: 1.15,
+  autoCheckpointEvery: 75, // seconds: a quiet moment with no teacher near saves progress by itself
   useTTS: true, // placeholder voice until real recordings exist (see public/sounds)
   clockTime: '10:17',
 };

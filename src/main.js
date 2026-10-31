@@ -93,6 +93,7 @@ class Game {
     this.difficultyBuilt = null;
     this.wiping = false;
     this.hudT = 0;
+    this.cpDeaths = 0; // deaths since the last checkpoint was saved (drives the teacher's mercy)
     this.fovKick = 0; // degrees added to the field of view for a split second (scares)
     this.caSpike = 0; // colour-fringing spike
     this.fearBoost = 0; // seconds of forced maximum fear (heartbeat, vignette)
@@ -353,6 +354,7 @@ class Game {
 
   /** Host pressed Start. */
   startMPHost() {
+    this.cpDeaths = 0;
     this.audio.init();
     resetState();
     if (this.difficultyBuilt !== settings.difficulty) this.buildWorld();
@@ -400,6 +402,7 @@ class Game {
   // ------------------------------------------------------------------ game flow (solo)
   startNew() {
     this.net.leave();
+    this.cpDeaths = 0;
     this.audio.init();
     clearSave();
     resetState();
@@ -422,6 +425,7 @@ class Game {
 
   continueGame() {
     this.net.leave();
+    this.cpDeaths = 0;
     this.audio.init();
     if (!loadSaveInto()) return this.startNew();
     if (this.difficultyBuilt !== settings.difficulty) this.buildWorld();
@@ -458,6 +462,7 @@ class Game {
 
   /** Solo: caught (or "restart from checkpoint"): reload the last checkpoint, keep the counters. */
   restartFromCheckpoint(died = true) {
+    if (died) this.cpDeaths++;
     const deaths = S.deaths + (died ? 1 : 0);
     const time = S.time;
     if (!loadSaveInto()) resetState();
@@ -626,6 +631,7 @@ class Game {
 
   /** Host: everybody goes back to the last checkpoint. */
   teamRestart(died) {
+    if (died) this.cpDeaths++;
     const deaths = S.deaths + (died ? 1 : 0);
     if (this.events.cpSnap) {
       applyShared(JSON.parse(this.events.cpSnap));

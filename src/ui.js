@@ -284,7 +284,7 @@ export class UI {
     clearTimeout(this.timers.dialHint);
     this.timers.dialHint = setTimeout(() => {
       if (this.dial) this.$('dial-hint').textContent = HINTS[hintKey] || '';
-    }, 40000);
+    }, 15000);
   }
 
   renderDial() {
