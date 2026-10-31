@@ -5,7 +5,7 @@ import { boardTexture, clockTexture, chartTexture, paperTexture, plateTexture } 
 import { S, settings } from './state.js';
 import { CFG } from './config.js';
 
-const TIER_MAX = { easy: 3, normal: 2, hard: 1 };
+const TIER_MAX = { story: 3, easy: 3, normal: 3, hard: 1 }; // how many batteries are placed
 
 export function furnish(world) {
   const g = world.game;

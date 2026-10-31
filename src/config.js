@@ -20,7 +20,7 @@ export const CFG = {
     crouch: 1.3,
     stepUp: 0.6,
     staminaMax: 100,
-    staminaDrain: 8, // ~12 s of running (was 8 s)
+    staminaDrain: 6, // ~16 s of running (was 8 s at first)
     staminaRegen: 30,
     staminaResume: 20,
     interactRange: 2.3,
@@ -68,8 +68,8 @@ export const CFG = {
     viewDistLight: 18,
     senseRadius: 2.0,
     detectTime: 0.9, // overridden per difficulty (difficulty.detect)
-    loseTime: 2.0,
-    searchTime: 12,
+    loseTime: 1.5,
+    searchTime: 10,
     catchDist: 0.85,
     stunTimes: [4, 3, 2],
     hideProtect: 5, // seconds after hiding in which he can't "find" you
@@ -80,9 +80,11 @@ export const CFG = {
   // detect: seconds he must keep you in view before he starts the chase
   // openChance: chance he opens the hiding place you are in · breath: the hold-your-breath mechanic
   difficulty: {
-    easy: { view: 0.6, chase: 2.9, detect: 1.5, openChance: 0.0, breath: false, label: '쉬움' },
-    normal: { view: 0.85, chase: 3.3, detect: 1.0, openChance: 0.1, breath: false, label: '보통' },
-    hard: { view: 1.1, chase: 3.8, detect: 0.6, openChance: 0.35, breath: true, label: '어려움' },
+    // story: he is slower than your walking pace, so you can always just walk away
+    story: { view: 0.4, chase: 2.2, detect: 3.0, openChance: 0.0, breath: false, label: '이야기 (아주 쉬움)' },
+    easy: { view: 0.55, chase: 2.7, detect: 2.0, openChance: 0.0, breath: false, label: '쉬움' },
+    normal: { view: 0.7, chase: 3.0, detect: 1.4, openChance: 0.05, breath: false, label: '보통' },
+    hard: { view: 1.0, chase: 3.5, detect: 0.8, openChance: 0.25, breath: true, label: '어려움' },
   },
 
   // ---- graphics presets ----
@@ -95,7 +97,7 @@ export const CFG = {
   // ---- misc ----
   fogDensity: 0.04,
   ambient: 1.15,
-  autoCheckpointEvery: 75, // seconds: a quiet moment with no teacher near saves progress by itself
+  autoCheckpointEvery: 45, // seconds: a quiet moment with no teacher near saves progress by itself
   useTTS: true, // placeholder voice until real recordings exist (see public/sounds)
   clockTime: '10:17',
 };
@@ -110,7 +112,7 @@ export const DEFAULT_SETTINGS = {
   brightness: 1.0,
   quality: 'medium',
   fov: 75,
-  difficulty: 'normal',
+  difficulty: 'easy', // first-time players start on easy; they can raise it in the settings
   subtitles: true,
   reduceShake: false,
 };

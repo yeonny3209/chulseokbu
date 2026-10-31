@@ -135,8 +135,8 @@ export class Teacher {
    * less far, notices you a bit later and runs a bit slower (never below a floor).
    */
   get assist() {
-    const n = Math.max(0, (this.game.cpDeaths || 0) - 1);
-    return { view: Math.max(0.5, 1 - 0.1 * n), speed: Math.min(0.6, 0.1 * n), detect: 1 + 0.25 * n };
+    const n = Math.max(0, this.game.cpDeaths || 0);
+    return { view: Math.max(0.4, 1 - 0.12 * n), speed: Math.min(0.8, 0.12 * n), detect: 1 + 0.3 * n };
   }
   get isClient() { return this.game.net.role === 'client'; }
   get players() { return this.game.allPlayers(); }
@@ -700,7 +700,7 @@ export class Teacher {
   // ---- chase
   updateChase(dt) {
     const g = this.game;
-    const speed = Math.max(2.6, this.diff.chase - this.assist.speed);
+    const speed = Math.max(1.8, this.diff.chase - this.assist.speed);
     let p = this.target;
     // lose a target that went down or is no longer a valid player
     if (!p || p.downed || !this.players.includes(p)) {
